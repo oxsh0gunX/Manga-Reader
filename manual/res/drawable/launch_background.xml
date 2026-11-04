@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aura launch splash: dark background only (no white flash). The video
+     splash plays in-app right after launch, so the launch drawable stays
+     a plain dark colour by design. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/launch_dark" />
+</layer-list>

@@ -1,0 +1,16 @@
+name: pdfreader
+description: "Premium minimal PDF reader - Phase 1 MVP. Fully offline, no login."
+publish_to: 'none'
+version: 2.2.2+6
+environment:
+  sdk: ^3.5.4
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app_icon.png
