@@ -7,7 +7,12 @@ Tick each one off; anything that fails is a bug, not a "known issue".
 
 ## 1. Import, library, restart
 - [ ] Import one PDF: it appears with name, page count, 0% progress.
-- [ ] Import the same file again: a second entry appears (no overwrite).
+- [ ] Import the same PDF again (same file, or a renamed copy of it):
+      a "This PDF is already in your library" message appears, still
+      one entry, and the existing document (with its progress) is
+      untouched. The picked copy is deleted, not the original entry.
+- [ ] Import a *different* PDF that happens to have the same filename:
+      both entries appear (the check is by file content, not by name).
 - [ ] Import a renamed non-PDF (e.g. a `.txt` renamed to `.pdf`): import
       fails with a message, no broken entry stays in the library.
 - [ ] Open a PDF, turn 5 pages, close the app completely, reopen: the
@@ -98,3 +103,22 @@ Tick each one off; anything that fails is a bug, not a "known issue".
       only the extracted-text view, never the PDF page image.
 - [ ] A scanned PDF with no text layer reports "no text" instead of
       showing junk in the text view.
+
+## 9. Tap navigation and vertical mode (v2.2.3)
+- [ ] Horizontal mode: tap the right third of the page -> next page;
+      tap the left third -> previous page; tap the centre -> the
+      controls show or hide, as before.
+- [ ] First page: a left tap does nothing (no crash, no document
+      switch). Last page: a right tap does nothing (the Next Document
+      button / volume key still switch documents, taps never do).
+- [ ] Tap navigation is off in panel/frame modes and in the text view:
+      there, a tap only shows or hides the controls.
+- [ ] Long-press still zooms into the pressed area, and pinch zoom
+      still works after tapping; a tap never turns a page while zoomed
+      out or in.
+- [ ] Reading style -> Vertical scrolling: pages flow down in one
+      continuous scroll; scrolling through many pages updates the
+      saved page. Switch back to Horizontal: you land on the same
+      page you were reading, not page 1.
+- [ ] Reading style sheet on a short screen (e.g. landscape): the
+      sheet scrolls instead of overflowing.

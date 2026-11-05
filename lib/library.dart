@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'file_hash.dart';
 import 'native.dart';
 
 /// One manually defined panel, as fractions of the page size.
@@ -49,6 +50,7 @@ class PdfDoc {
     this.panels = 0,
     this.frameLayout = 'auto',
     Map<String, List<PanelRect>>? customPanels,
+    this.contentHash,
   }) : customPanels = customPanels ?? {};
 
   final String id;
@@ -70,6 +72,11 @@ class PdfDoc {
   // The list order IS the reading order for that page. When a page has
   // an entry here it wins over automatic detection and over the grid.
   Map<String, List<PanelRect>> customPanels;
+  // SHA-256 of the imported file's bytes. This is the duplicate check:
+  // same hash means the same PDF, whatever the filename is. Null for
+  // entries saved before v2.2.3; those are hashed (and saved) lazily
+  // the next time an import runs, so old entries take part too.
+  String? contentHash;
 
   double get progress =>
       pageCount <= 0 ? 0 : (lastPage + 1) / pageCount;
@@ -92,6 +99,7 @@ class PdfDoc {
           for (final e in customPanels.entries)
             e.key: e.value.map((r) => r.toJson()).toList(),
         },
+        'contentHash': contentHash,
       };
 
   static PdfDoc fromJson(Map<String, dynamic> j) {
@@ -129,6 +137,7 @@ class PdfDoc {
       panels: numInt('panels', 0) < 0 ? 0 : numInt('panels', 0),
       frameLayout: layouts.contains(layout) ? layout : 'auto',
       customPanels: _parseCustomPanels(j['customPanels']),
+      contentHash: j['contentHash'] is String ? j['contentHash'] as String : null,
     );
   }
 }
@@ -246,6 +255,11 @@ class AppSettings {
   }
 }
 
+/// What an import attempt ended as. `duplicate` means the exact same
+/// PDF content is already in the library: no new entry is created and
+/// the existing document is left untouched.
+enum ImportOutcome { added, duplicate, failed }
+
 /// Library + settings, persisted as JSON in the app's private files dir.
 /// The list order IS the reading sequence: reordering it reorders the
 /// "Next Document" chain, and it is saved on every change.
@@ -335,31 +349,96 @@ class Library extends ChangeNotifier {
 
   /// Imports exactly ONE PDF (v2 rule: the picker selects one file at a
   /// time; the user imports more by tapping Import again). Returns
-  /// (added, failed, cancelled).
-  Future<(int, int, bool)> importOne() async {
+  /// (added, failed, cancelled, duplicate).
+  Future<(int, int, bool, bool)> importOne() async {
     final p = await NativeBridge.pickPdf();
-    if (p == null) return (0, 0, true);
-    final path = p['path'] as String;
-    final name = p['name'] as String;
+    if (p == null) return (0, 0, true, false);
+    final outcome = await importPicked(
+      path: p['path'] as String,
+      name: p['name'] as String,
+      size: (p['size'] as num?)?.toInt() ?? 0,
+    );
+    return switch (outcome) {
+      ImportOutcome.added => (1, 0, false, false),
+      ImportOutcome.duplicate => (0, 0, false, true),
+      ImportOutcome.failed => (0, 1, false, false),
+    };
+  }
+
+  /// The part of the import after picking, kept separate so tests can
+  /// drive it with real files and no picker. `path` is the picked copy
+  /// in the app's own files (the native picker already copied it there).
+  Future<ImportOutcome> importPicked({
+    required String path,
+    required String name,
+    required int size,
+  }) async {
+    PdfDoc? addedDoc;
     try {
+      final hash = await sha256File(File(path));
+      // Fill in hashes for entries saved before v2.2.3, so they take
+      // part in the check too. A file that is gone (or unreadable) is
+      // simply skipped: its entry stays, and it cannot match.
+      var dirty = false;
+      for (final d in docs) {
+        if (d.contentHash != null) continue;
+        try {
+          final f = File(d.path);
+          if (await f.exists()) {
+            d.contentHash = await sha256File(f);
+            dirty = true;
+          }
+        } catch (_) {}
+      }
+      PdfDoc? existing;
+      for (final d in docs) {
+        if (d.contentHash == hash) {
+          existing = d;
+          break;
+        }
+      }
+      if (existing != null) {
+        // Same content, already in the library: keep the existing
+        // entry exactly as it is, and drop only the freshly picked
+        // copy. Never delete the existing document's file (the guard
+        // covers the case where the picked path IS that file).
+        if (path != existing.path) {
+          try {
+            await File(path).delete();
+          } catch (_) {}
+        }
+        if (dirty) await _save();
+        return ImportOutcome.duplicate;
+      }
       final count = await NativeBridge.pageCount(path);
       if (count <= 0) throw Exception('No pages');
-      docs.add(PdfDoc(
+      addedDoc = PdfDoc(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         name: name,
         path: path,
-        size: (p['size'] as num?)?.toInt() ?? 0,
+        size: size,
         pageCount: count,
         addedMs: DateTime.now().millisecondsSinceEpoch,
-      ));
+        contentHash: hash,
+      );
+      docs.add(addedDoc);
       await _save();
       notifyListeners();
-      return (1, 0, false);
+      return ImportOutcome.added;
     } catch (_) {
-      try {
-        await File(path).delete();
-      } catch (_) {}
-      return (0, 1, false);
+      // A failed import leaves nothing behind: drop the entry again
+      // if it was added, and delete the picked copy — unless the path
+      // belongs to a document already in the library, which must
+      // never be deleted by a failed import of something else.
+      if (addedDoc != null) {
+        docs.removeWhere((d) => d.id == addedDoc!.id);
+      }
+      if (!docs.any((d) => d.path == path)) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+      return ImportOutcome.failed;
     }
   }
 

@@ -12,7 +12,7 @@ class AboutPage extends StatelessWidget {
   static const String developer = 'Safvan';
   static const String email = 'safvanmbn@gmail.com';
   static const String github = 'https://github.com/oxsh0gunX';
-  static const String version = '2.2.2';
+  static const String version = '2.2.3';
 
   Future<void> _contact(BuildContext context) async {
     try {

@@ -32,10 +32,16 @@ class _HomePageState extends State<HomePage> {
     if (_importing) return;
     setState(() => _importing = true);
     try {
-      final (added, failed, cancelled) = await widget.library.importOne();
+      final (added, failed, cancelled, duplicate) =
+          await widget.library.importOne();
       if (!mounted) return;
       if (cancelled) {
         // User closed the picker without choosing: say nothing.
+      } else if (duplicate) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('This PDF is already in your library')),
+        );
       } else if (added == 1) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('PDF added to your library')),

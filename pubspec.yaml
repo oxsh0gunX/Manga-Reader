@@ -1,7 +1,7 @@
 name: pdfreader
 description: "Premium minimal PDF reader - Phase 1 MVP. Fully offline, no login."
 publish_to: 'none'
-version: 2.2.2+6
+version: 2.2.3+7
 environment:
   sdk: ^3.5.4
 dependencies:

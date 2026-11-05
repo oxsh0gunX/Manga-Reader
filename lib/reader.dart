@@ -172,6 +172,37 @@ class _ReaderPageState extends State<ReaderPage>
 
   void _toggleControls() => _setControlsVisible(!_controlsVisible);
 
+  /// Tap navigation, page-by-page (horizontal) mode only. The reading
+  /// area is split in thirds: left turns back a page, right turns
+  /// forward, and the centre keeps the old behaviour (show/hide the
+  /// controls). Side taps never toggle the controls and never switch
+  /// documents: at the first or last page they simply do nothing.
+  /// Text view, scroll modes and panel/frame modes keep plain tap =
+  /// toggle controls, so text selection, scrolling, long-press zoom
+  /// and panel taps are untouched. A pinch or drag wins the gesture
+  /// arena over a tap, and a long-press wins over a tap, so zooming
+  /// can never turn a page by accident.
+  void _onTapUp(TapUpDetails details) {
+    if (_showText || _effectiveStyle() != 'horizontal') {
+      _toggleControls();
+      return;
+    }
+    final box = _shotKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || box.size.width <= 0) {
+      _toggleControls();
+      return;
+    }
+    final local = box.globalToLocal(details.globalPosition);
+    final third = box.size.width / 3;
+    if (local.dx < third) {
+      if (!_isFirstPage) _goToPage(_page - 1);
+    } else if (local.dx > 2 * third) {
+      if (!_isLastPage) _goToPage(_page + 1);
+    } else {
+      _toggleControls();
+    }
+  }
+
   // ---------- page rendering / info ----------
 
   Future<Map<String, dynamic>> _pageFutureFor(PdfDoc doc, int page,
@@ -811,17 +842,18 @@ class _ReaderPageState extends State<ReaderPage>
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => Padding(
-          padding: const EdgeInsets.fromLTRB(8, 12, 8, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(8),
-                child: Text('Reading style',
-                    style:
-                        TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-              ),
+        builder: (ctx, setSheet) => SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 12, 8, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text('Reading style',
+                      style:
+                          TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                ),
               for (final (value, label, desc) in styles)
                 RadioListTile<String>(
                   title: Text(label),
@@ -845,15 +877,16 @@ class _ReaderPageState extends State<ReaderPage>
                     });
                   },
                 ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: Text(
-                  'The style is saved for this document and remembered '
-                  'after restarting the app.',
-                  style: TextStyle(fontSize: 13),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    'The style is saved for this document and remembered '
+                    'after restarting the app.',
+                    style: TextStyle(fontSize: 13),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1862,7 +1895,7 @@ class _ReaderPageState extends State<ReaderPage>
                 child: Stack(
                   children: [
                     GestureDetector(
-                      onTap: _toggleControls,
+                      onTapUp: _onTapUp,
                       child: content,
                     ),
                     if (_controlsVisible &&

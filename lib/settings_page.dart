@@ -321,7 +321,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               leading: const Icon(Icons.info_outlined),
               title: const Text('About PDF Reader'),
-              subtitle: const Text('Version 2.2.2 • Safvan'),
+              subtitle: const Text('Version 2.2.3 • Safvan'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () {
                 Navigator.of(context).push(

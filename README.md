@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.2.2-red" alt="version 2.2.2">
+  <img src="https://img.shields.io/badge/version-2.2.3-red" alt="version 2.2.3">
   <img src="https://img.shields.io/badge/Android-8.0%2B-green" alt="Android 8.0+">
   <img src="https://img.shields.io/badge/offline-100%25-blue" alt="100% offline">
   <img src="https://img.shields.io/badge/login-none-lightgrey" alt="no login">
@@ -122,8 +122,9 @@ The manual route still needs this machine's toolchain jars (`flutter-proof/`, `m
 | v2.2 | Render-cache limits, panel transitions, missing-file handling, app icon |
 | v2.2.1 | Reliability: tolerant loading, atomic saves, native resource fixes |
 | v2.2.2 | Volume keys switch documents at the ends of a book |
+| v2.2.3 | Duplicate-import guard (content hash), left/right tap navigation, vertical mode verified + tested |
 
-Version consistency: `2.2.2+6` in `pubspec.yaml`, `2.2.2` on the About page and in the Settings subtitle, and `v2.2.2` here. Package `com.example.pdfreader`, minSdk 26, targetSdk 34, signing configuration unchanged.
+Version consistency: `2.2.3+7` in `pubspec.yaml`, `2.2.3` on the About page and in the Settings subtitle, and `v2.2.3` here. Package `com.example.pdfreader`, minSdk 26, targetSdk 34, signing configuration unchanged.
 
 ## ✅ Tests
 
