@@ -122,3 +122,46 @@ Tick each one off; anything that fails is a bug, not a "known issue".
       page you were reading, not page 1.
 - [ ] Reading style sheet on a short screen (e.g. landscape): the
       sheet scrolls instead of overflowing.
+
+## 10. Comics & manga (v2.3.0)
+- [ ] Import a real `.cbz` (ZIP of JPG/PNG pages): it appears in the
+      library with its page count; pages open in order, including
+      `page10` after `page2` (natural sort, also inside subfolders).
+- [ ] Import a real `.cb7` (7z) and a `.cbt` (tar, and a `.tar.gz`):
+      all three open and read the same way as the CBZ.
+- [ ] Import a single image (JPG, PNG, WEBP, GIF) and a single BMP:
+      each becomes a one-page book; the BMP reads (it is converted
+      to JPEG on import).
+- [ ] Import the same CBZ twice: the second import shows "already in
+      your library" and no second card appears. Import a different
+      comic with the same filename: it is added normally.
+- [ ] Import a `.cbr`: the app refuses it with the RAR message
+      (suggesting CBZ conversion) and does not add a card.
+- [ ] Import a corrupt archive (truncated CBZ) and an archive with no
+      images: each shows a clear message, adds no card, and leaves
+      no half-extracted folder behind.
+- [ ] Import a password-protected ZIP if you have one: it is refused
+      with the password message (there is no password prompt).
+- [ ] Open a manga CBZ, tap the menu (⋮) -> "Read right to left
+      (manga)": left tap now turns forward, right tap turns back,
+      and the bottom-bar arrows swap. Volume Up still turns forward
+      in reading order. Turn RTL off: LTR behaviour returns.
+- [ ] In a comic: volume keys turn pages; at the last page Volume Up
+      opens the next document, at the first page Volume Down opens
+      the previous one; progress is remembered per book.
+- [ ] Vertical scrolling mode works for a comic; switching between
+      Horizontal and Vertical keeps the page.
+- [ ] Panel/frame modes work on comic pages (panel detection is the
+      same bordered-panel detector as for PDFs; borderless pages
+      fall back to the grid).
+- [ ] Brightness slider, screenshot shortcut, and the text-view
+      button: brightness and screenshots work; the text-view button
+      is hidden for comics (there is no text layer) and still
+      present for PDFs.
+- [ ] Delete a comic from the library: its extracted pages folder
+      goes with it (check storage before/after — a comic uses about
+      twice its archive size while it is in the library).
+- [ ] Known quirk to confirm, not fix on the phone: in vertical mode
+      a very short book (2–3 tall pages) may not register its last
+      page as read when you scroll to the very bottom; page-by-page
+      mode records it fine.

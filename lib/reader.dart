@@ -194,10 +194,23 @@ class _ReaderPageState extends State<ReaderPage>
     }
     final local = box.globalToLocal(details.globalPosition);
     final third = box.size.width / 3;
+    // In manga (right-to-left) reading, forward is towards the left:
+    // the left third turns the page forward, the right third back.
+    // The centre third still only toggles the controls, in both
+    // directions, and the first/last page still stays put.
+    final forwardIsLeft = _doc.rtl;
     if (local.dx < third) {
-      if (!_isFirstPage) _goToPage(_page - 1);
+      if (forwardIsLeft) {
+        if (!_isLastPage) _goToPage(_page + 1);
+      } else {
+        if (!_isFirstPage) _goToPage(_page - 1);
+      }
     } else if (local.dx > 2 * third) {
-      if (!_isLastPage) _goToPage(_page + 1);
+      if (forwardIsLeft) {
+        if (!_isFirstPage) _goToPage(_page - 1);
+      } else {
+        if (!_isLastPage) _goToPage(_page + 1);
+      }
     } else {
       _toggleControls();
     }
@@ -209,6 +222,36 @@ class _ReaderPageState extends State<ReaderPage>
       {bool preloadNeighbours = true}) {
     final key = '${doc.id}_$page';
     final fut = _pageFutures.putIfAbsent(key, () async {
+      // Comic / single-image pages already exist as files on disk:
+      // no rendering, just the image path and its size (found lazily
+      // from the header, the same way a PDF render returns its size).
+      // Everything below — the _pageInfo cache, the 120-entry cap,
+      // neighbour preloading, panels, frames, zoom — works off this
+      // same {path, width, height} map as for PDFs.
+      if (doc.kind != 'pdf') {
+        final path = widget.library.comicPagePath(doc, page);
+        final size = await NativeBridge.imageSize(path);
+        final res = <String, dynamic>{
+          'path': path,
+          'width': (size?['width'] as num?)?.toInt() ?? 0,
+          'height': (size?['height'] as num?)?.toInt() ?? 0,
+        };
+        final isNew = !_pageInfo.containsKey(key);
+        _pageInfo[key] = res;
+        if (isNew) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() {});
+          });
+        }
+        if (preloadNeighbours) {
+          for (final n in [page - 1, page + 1]) {
+            if (n >= 0 && n < doc.pageCount) {
+              _pageFutureFor(doc, n, preloadNeighbours: false);
+            }
+          }
+        }
+        return res;
+      }
       final width = mounted
           ? (MediaQuery.of(context).size.width *
                   MediaQuery.of(context).devicePixelRatio)
@@ -1405,6 +1448,9 @@ class _ReaderPageState extends State<ReaderPage>
     final frameMode = _isFrameMode;
     return PageView.builder(
       controller: _pageController,
+      // Manga reads right to left: the page turn runs the other way,
+      // while the page indices stay in reading order (0 is first).
+      reverse: _doc.rtl,
       itemCount: _doc.pageCount,
       onPageChanged: _onPageChanged,
       itemBuilder: (ctx, index) {
@@ -1730,11 +1776,14 @@ class _ReaderPageState extends State<ReaderPage>
               ],
             ),
             actions: [
-              IconButton(
-                tooltip: _showText ? 'Show page image' : 'Select text',
-                icon: Icon(_showText ? Icons.image_outlined : Icons.text_fields),
-                onPressed: () => setState(() => _showText = !_showText),
-              ),
+              // Text view only exists for PDFs (extracted text). Comic
+              // pages are images, so the toggle is hidden for them.
+              if (_doc.kind == 'pdf')
+                IconButton(
+                  tooltip: _showText ? 'Show page image' : 'Select text',
+                  icon: Icon(_showText ? Icons.image_outlined : Icons.text_fields),
+                  onPressed: () => setState(() => _showText = !_showText),
+                ),
               IconButton(
                 tooltip: 'Brightness',
                 icon: const Icon(Icons.brightness_6_outlined),
@@ -1773,6 +1822,10 @@ class _ReaderPageState extends State<ReaderPage>
                     final lib = widget.library;
                     lib.settings.readingFilter = !lib.settings.readingFilter;
                     await lib.saveSettings();
+                    if (mounted) setState(() {});
+                  } else if (v == 'rtl') {
+                    _doc.rtl = !_doc.rtl;
+                    await widget.library.saveDoc(_doc);
                     if (mounted) setState(() {});
                   } else if (v == 'panels') {
                     _openFrameSettings();
@@ -1816,7 +1869,7 @@ class _ReaderPageState extends State<ReaderPage>
                           size: 20,
                         ),
                         const SizedBox(width: 8),
-                        const Text('Volume buttons turn pages'),
+                        Flexible(child: const Text('Volume buttons turn pages')),
                       ],
                     ),
                   ),
@@ -1831,7 +1884,7 @@ class _ReaderPageState extends State<ReaderPage>
                           size: 20,
                         ),
                         const SizedBox(width: 8),
-                        const Text('Vol Up + Down = screenshot'),
+                        Flexible(child: const Text('Vol Up + Down = screenshot')),
                       ],
                     ),
                   ),
@@ -1846,7 +1899,22 @@ class _ReaderPageState extends State<ReaderPage>
                           size: 20,
                         ),
                         const SizedBox(width: 8),
-                        const Text('Dark page filter'),
+                        Flexible(child: const Text('Dark page filter')),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'rtl',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _doc.rtl
+                              ? Icons.check_box
+                              : Icons.check_box_outline_blank,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(child: const Text('Read right to left (manga)')),
                       ],
                     ),
                   ),
@@ -2052,7 +2120,12 @@ class _ReaderPageState extends State<ReaderPage>
                       children: [
                         IconButton(
                           tooltip: 'Previous page',
-                          icon: const Icon(Icons.chevron_left),
+                          // Manga reads right to left: "previous" points
+                          // right, "next" points left. The actions stay
+                          // the same (previous = earlier page).
+                          icon: Icon(_doc.rtl
+                              ? Icons.chevron_right
+                              : Icons.chevron_left),
                           onPressed: (_doc.pageCount <= 0 || _isFirstPage)
                               ? null
                               : () => _goToPage(_page - 1),
@@ -2084,7 +2157,9 @@ class _ReaderPageState extends State<ReaderPage>
                         ),
                         IconButton(
                           tooltip: 'Next page',
-                          icon: const Icon(Icons.chevron_right),
+                          icon: Icon(_doc.rtl
+                              ? Icons.chevron_left
+                              : Icons.chevron_right),
                           onPressed: (_doc.pageCount <= 0 || _isLastPage)
                               ? null
                               : () => _goToPage(_page + 1),

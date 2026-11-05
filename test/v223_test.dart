@@ -60,8 +60,8 @@ void main() {
       final dir = await Directory.systemTemp.createTemp('v223_dup_');
       addTearDown(() => dir.delete(recursive: true));
       final lib = Library();
-      final first = await writeFile(dir, 'book.pdf', [1, 2, 3, 4, 5]);
-      final copy = await writeFile(dir, 'renamed.pdf', [1, 2, 3, 4, 5]);
+      final first = await writeFile(dir, 'book.pdf', [0x25, 0x50, 0x44, 0x46, 1, 2, 3, 4, 5]);
+      final copy = await writeFile(dir, 'renamed.pdf', [0x25, 0x50, 0x44, 0x46, 1, 2, 3, 4, 5]);
 
       expect(
           await lib.importPicked(
@@ -88,8 +88,8 @@ void main() {
       final a = Directory('${dir.path}/a')..createSync();
       final b = Directory('${dir.path}/b')..createSync();
       final lib = Library();
-      final first = await writeFile(a, 'book.pdf', [1, 2, 3]);
-      final second = await writeFile(b, 'book.pdf', [9, 9, 9]);
+      final first = await writeFile(a, 'book.pdf', [0x25, 0x50, 0x44, 0x46, 1, 2, 3]);
+      final second = await writeFile(b, 'book.pdf', [0x25, 0x50, 0x44, 0x46, 9, 9, 9]);
 
       expect(
           await lib.importPicked(
@@ -109,24 +109,25 @@ void main() {
       final dir = await Directory.systemTemp.createTemp('v223_old_');
       addTearDown(() => dir.delete(recursive: true));
       final lib = Library();
-      final legacyFile = await writeFile(dir, 'old.pdf', [7, 7, 7, 7]);
+      final legacyFile = await writeFile(dir, 'old.pdf', [0x25, 0x50, 0x44, 0x46, 7, 7, 7, 7]);
       lib.docs.add(PdfDoc(
         id: 'legacy',
         name: 'old.pdf',
         path: legacyFile.path,
-        size: 4,
+        size: 8,
         pageCount: 2,
         addedMs: 1,
         // contentHash left null, as saved before v2.2.3.
       ));
-      final copy = await writeFile(dir, 'old-copy.pdf', [7, 7, 7, 7]);
+      final copy = await writeFile(dir, 'old-copy.pdf', [0x25, 0x50, 0x44, 0x46, 7, 7, 7, 7]);
 
       expect(
           await lib.importPicked(
-              path: copy.path, name: 'old-copy.pdf', size: 4),
+              path: copy.path, name: 'old-copy.pdf', size: 8),
           ImportOutcome.duplicate);
       expect(lib.docs.length, 1);
-      expect(lib.docs.first.contentHash, sha256Hex([7, 7, 7, 7]));
+      expect(lib.docs.first.contentHash,
+          sha256Hex([0x25, 0x50, 0x44, 0x46, 7, 7, 7, 7]));
     });
 
     test('contentHash round-trips through JSON; old JSON loads as null',

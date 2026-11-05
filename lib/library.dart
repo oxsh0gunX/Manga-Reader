@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'comic.dart';
 import 'file_hash.dart';
 import 'native.dart';
 
@@ -51,6 +52,9 @@ class PdfDoc {
     this.frameLayout = 'auto',
     Map<String, List<PanelRect>>? customPanels,
     this.contentHash,
+    this.kind = 'pdf',
+    this.rtl = false,
+    this.pageFiles,
   }) : customPanels = customPanels ?? {};
 
   final String id;
@@ -61,6 +65,19 @@ class PdfDoc {
   int lastPage;
   int lastOpenedMs;
   final int addedMs;
+  // What this document is: 'pdf' (rendered by PdfRenderer), 'comic'
+  // (an extracted archive: pages live in filesDir/comics/<id>/), or
+  // 'image' (one image file; doc.path IS the page). Legacy entries
+  // saved before v2.3.0 have no kind and load as 'pdf'.
+  final String kind;
+  // Manga reading direction for this document: false = left to
+  // right (comics), true = right to left (manga). Toggled in the
+  // reader's menu; only affects page-turn direction, never the
+  // reading order (page 0 is always first).
+  bool rtl;
+  // Page filenames inside filesDir/comics/<id>/, in reading order.
+  // Only for kind 'comic'. Null for PDFs and single images.
+  final List<String>? pageFiles;
   // Reading style saved per document: horizontal | vertical | panel |
   // frame | continuous | auto. 'auto' adapts to the page shape.
   String style;
@@ -100,6 +117,9 @@ class PdfDoc {
             e.key: e.value.map((r) => r.toJson()).toList(),
         },
         'contentHash': contentHash,
+        'kind': kind,
+        'rtl': rtl,
+        'pageFiles': pageFiles,
       };
 
   static PdfDoc fromJson(Map<String, dynamic> j) {
@@ -124,6 +144,12 @@ class PdfDoc {
     final style = str('style', 'horizontal');
     const layouts = {'auto', 'vertical', 'grid'};
     final layout = str('frameLayout', 'auto');
+    const kinds = {'pdf', 'comic', 'image'};
+    final kind = str('kind', 'pdf');
+    final rawPages = j['pageFiles'];
+    final pageFiles = rawPages is List
+        ? rawPages.whereType<String>().toList()
+        : null;
     return PdfDoc(
       id: str('id', ''),
       name: str('name', 'Unknown'),
@@ -138,6 +164,9 @@ class PdfDoc {
       frameLayout: layouts.contains(layout) ? layout : 'auto',
       customPanels: _parseCustomPanels(j['customPanels']),
       contentHash: j['contentHash'] is String ? j['contentHash'] as String : null,
+      kind: kinds.contains(kind) ? kind : 'pdf',
+      rtl: j['rtl'] is bool ? j['rtl'] as bool : false,
+      pageFiles: pageFiles,
     );
   }
 }
@@ -256,9 +285,14 @@ class AppSettings {
 }
 
 /// What an import attempt ended as. `duplicate` means the exact same
-/// PDF content is already in the library: no new entry is created and
-/// the existing document is left untouched.
-enum ImportOutcome { added, duplicate, failed }
+/// file content is already in the library: no new entry is created
+/// and the existing document is left untouched. `unsupported` means
+/// the file was recognised (a RAR/CBR archive) but this app cannot
+/// open that format — see [Library.lastImportMessage] for the reason.
+/// The message for the last failed/unsupported import is kept on
+/// [Library.lastImportMessage] so the UI can show the real reason
+/// instead of a generic "could not be read".
+enum ImportOutcome { added, duplicate, failed, unsupported }
 
 /// Library + settings, persisted as JSON in the app's private files dir.
 /// The list order IS the reading sequence: reordering it reorders the
@@ -271,7 +305,28 @@ class Library extends ChangeNotifier {
   bool loaded = false;
   String? _dir;
 
+  /// Plain-language reason for the last failed or unsupported import,
+  /// or null when the last import added a document / was a duplicate.
+  /// Read it right after [importOne]/[importPicked] returns.
+  String? lastImportMessage;
+
   String get _libraryPath => '$_dir/library.json';
+
+  /// App-private folder holding one subfolder per extracted comic:
+  /// filesDir/comics/<docId>/0001.jpg, ... Nothing is ever written
+  /// to a public folder, and the folder is deleted with the document.
+  String comicsDirFor(String docId) => '${_dir ?? ''}/comics/$docId';
+
+  /// Full path of one comic page. For a single image the document's
+  /// own file IS the page; for an archive it is the extracted file.
+  /// Returns '' when the page does not exist (the reader then shows
+  /// its "could not load this page" message instead of crashing).
+  String comicPagePath(PdfDoc doc, int page) {
+    if (doc.kind == 'image') return doc.path;
+    final files = doc.pageFiles;
+    if (files == null || page < 0 || page >= files.length) return '';
+    return '${comicsDirFor(doc.id)}/${files[page]}';
+  }
 
   Future<void> load() async {
     _dir = await NativeBridge.filesDir();
@@ -347,21 +402,25 @@ class Library extends ChangeNotifier {
     return r.take(8).toList();
   }
 
-  /// Imports exactly ONE PDF (v2 rule: the picker selects one file at a
-  /// time; the user imports more by tapping Import again). Returns
-  /// (added, failed, cancelled, duplicate).
-  Future<(int, int, bool, bool)> importOne() async {
-    final p = await NativeBridge.pickPdf();
-    if (p == null) return (0, 0, true, false);
+  /// Imports exactly ONE file (v2 rule: the picker selects one file
+  /// at a time; the user imports more by tapping Import again).
+  /// Returns (added, failed, cancelled, duplicate, message) — the
+  /// message is the plain-language reason when an import failed or
+  /// hit an unsupported format, null otherwise.
+  Future<(int, int, bool, bool, String?)> importOne() async {
+    final p = await NativeBridge.pickFile();
+    if (p == null) return (0, 0, true, false, null);
     final outcome = await importPicked(
       path: p['path'] as String,
       name: p['name'] as String,
       size: (p['size'] as num?)?.toInt() ?? 0,
     );
     return switch (outcome) {
-      ImportOutcome.added => (1, 0, false, false),
-      ImportOutcome.duplicate => (0, 0, false, true),
-      ImportOutcome.failed => (0, 1, false, false),
+      ImportOutcome.added => (1, 0, false, false, null),
+      ImportOutcome.duplicate => (0, 0, false, true, null),
+      ImportOutcome.failed => (0, 1, false, false, lastImportMessage),
+      ImportOutcome.unsupported =>
+        (0, 1, false, false, lastImportMessage),
     };
   }
 
@@ -374,6 +433,8 @@ class Library extends ChangeNotifier {
     required int size,
   }) async {
     PdfDoc? addedDoc;
+    Directory? pagesDir;
+    lastImportMessage = null;
     try {
       final hash = await sha256File(File(path));
       // Fill in hashes for entries saved before v2.2.3, so they take
@@ -410,36 +471,275 @@ class Library extends ChangeNotifier {
         if (dirty) await _save();
         return ImportOutcome.duplicate;
       }
-      final count = await NativeBridge.pageCount(path);
-      if (count <= 0) throw Exception('No pages');
-      addedDoc = PdfDoc(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: name,
-        path: path,
-        size: size,
-        pageCount: count,
-        addedMs: DateTime.now().millisecondsSinceEpoch,
-        contentHash: hash,
+      // What is this file, really? Extension + magic bytes (comic.dart).
+      // A file whose name lies about its contents is refused, and a
+      // RAR/CBR is recognised but not opened — see comic.dart for why.
+      final header = await File(
+        path,
+      ).openRead(0, 512).fold<Uint8List>(
+        Uint8List(0),
+        (a, b) => Uint8List.fromList([...a, ...b]),
       );
+      final format = detectFormat(name, header);
+      if (format == ComicFormat.rar) {
+        lastImportMessage =
+            'RAR archives (.cbr) are not supported yet — this app '
+            'cannot open RAR files. Convert it to CBZ (ZIP) on your '
+            'computer to read it here.';
+        if (!docs.any((d) => d.path == path)) {
+          try {
+            await File(path).delete();
+          } catch (_) {}
+        }
+        return ImportOutcome.unsupported;
+      }
+      final id = DateTime.now().microsecondsSinceEpoch.toString();
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (format == ComicFormat.pdf) {
+        final count = await NativeBridge.pageCount(path);
+        if (count <= 0) throw ComicError('This PDF has no pages.');
+        addedDoc = PdfDoc(
+          id: id,
+          name: name,
+          path: path,
+          size: size,
+          pageCount: count,
+          addedMs: nowMs,
+          contentHash: hash,
+        );
+      } else if (format == ComicFormat.image) {
+        addedDoc = await _importSingleImage(
+          id: id,
+          path: path,
+          name: name,
+          size: size,
+          hash: hash,
+          nowMs: nowMs,
+        );
+        pagesDir = Directory(comicsDirFor(id));
+      } else {
+        // Comic archive: extract its pages into a fresh app-private
+        // folder, then convert any BMP pages (Flutter cannot decode
+        // BMP) to JPEG. The archive file itself stays as the
+        // document's source, like a PDF.
+        pagesDir = Directory(comicsDirFor(id));
+        await pagesDir.create(recursive: true);
+        List<String> pageFiles;
+        if (format == ComicFormat.sevenZ) {
+          final raw = await NativeBridge.extractSevenZ(
+            path: path,
+            destDir: pagesDir.path,
+          );
+          pageFiles = await _sortAndRenamePages(pagesDir, raw);
+        } else {
+          pageFiles = await extractArchivePages(
+            archivePath: path,
+            destDir: pagesDir.path,
+            format: format,
+          );
+        }
+        pageFiles = await _convertBmpPages(pagesDir, pageFiles);
+        if (pageFiles.isEmpty) {
+          throw ComicError('No images found in this archive.');
+        }
+        addedDoc = PdfDoc(
+          id: id,
+          name: name,
+          path: path,
+          size: size,
+          pageCount: pageFiles.length,
+          addedMs: nowMs,
+          contentHash: hash,
+          kind: 'comic',
+          pageFiles: pageFiles,
+        );
+      }
       docs.add(addedDoc);
       await _save();
       notifyListeners();
       return ImportOutcome.added;
-    } catch (_) {
-      // A failed import leaves nothing behind: drop the entry again
-      // if it was added, and delete the picked copy — unless the path
-      // belongs to a document already in the library, which must
-      // never be deleted by a failed import of something else.
-      if (addedDoc != null) {
-        docs.removeWhere((d) => d.id == addedDoc!.id);
-      }
-      if (!docs.any((d) => d.path == path)) {
-        try {
-          await File(path).delete();
-        } catch (_) {}
-      }
+    } on ComicError catch (e) {
+      lastImportMessage = e.message;
+      await _dropFailedImport(addedDoc, pagesDir, path);
+      return ImportOutcome.failed;
+    } catch (e) {
+      // Native 7z failures arrive as PlatformException; anything
+      // else is a corrupt or unreadable file.
+      final msg = e.toString();
+      lastImportMessage = msg.contains('password') ||
+              msg.contains('Password')
+          ? 'This archive is password-protected. Passwords are not supported.'
+          : msg.contains('7z') || msg.contains('SevenZ')
+              ? 'This 7z archive could not be opened. It may be damaged, '
+                  'or use a compression method this app does not support.'
+              : 'That file could not be read. It may be corrupted.';
+      await _dropFailedImport(addedDoc, pagesDir, path);
       return ImportOutcome.failed;
     }
+  }
+
+  /// A failed import leaves nothing behind: drop the entry again if
+  /// it was added, delete the half-extracted pages folder, and delete
+  /// the picked copy — unless the path belongs to a document already
+  /// in the library, which must never be deleted by a failed import
+  /// of something else.
+  Future<void> _dropFailedImport(
+    PdfDoc? addedDoc,
+    Directory? pagesDir,
+    String path,
+  ) async {
+    if (addedDoc != null) {
+      docs.removeWhere((d) => d.id == addedDoc.id);
+    }
+    if (pagesDir != null) {
+      try {
+        if (await pagesDir.exists()) {
+          await pagesDir.delete(recursive: true);
+        }
+        // The parent comics/ folder was created with the pages folder;
+        // remove it too when it is now empty, so a failed import leaves
+        // no trace at all. Fails silently when other books live there.
+        await pagesDir.parent.delete();
+      } catch (_) {}
+    }
+    if (!docs.any((d) => d.path == path)) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+  }
+
+  /// One image file becomes a one-page document. The picked copy is
+  /// moved into the document's own app-private folder; a BMP is
+  /// converted to JPEG first, because Flutter cannot show BMP.
+  Future<PdfDoc> _importSingleImage({
+    required String id,
+    required String path,
+    required String name,
+    required int size,
+    required String hash,
+    required int nowMs,
+  }) async {
+    final dir = Directory(comicsDirFor(id));
+    await dir.create(recursive: true);
+    final ext = name.contains('.')
+        ? name.split('.').last.toLowerCase()
+        : 'jpg';
+    final destName = '0001.$ext';
+    final dest = File('${dir.path}/$destName');
+    await File(path).rename(dest.path);
+    String pageFile = destName;
+    if (ext == 'bmp') {
+      final jpg = File('${dir.path}/0001.jpg');
+      final ok = await NativeBridge.convertToJpeg(
+        path: dest.path,
+        destPath: jpg.path,
+      );
+      if (!ok) {
+        throw ComicError('This image could not be read. It may be corrupted.');
+      }
+      try {
+        await dest.delete();
+      } catch (_) {}
+      pageFile = '0001.jpg';
+    }
+    return PdfDoc(
+      id: id,
+      name: name,
+      path: '${dir.path}/$pageFile',
+      size: size,
+      pageCount: 1,
+      addedMs: nowMs,
+      contentHash: hash,
+      kind: 'image',
+      pageFiles: [pageFile],
+    );
+  }
+
+  /// The native 7z extractor writes files under their archive paths
+  /// (possibly in subfolders, in archive order). Keep only images,
+  /// sort them naturally, and rename them to 0001.jpg, 0002.png, ...
+  /// so a crafted entry name can never escape the pages folder.
+  /// Non-image files are deleted, and emptied subfolders are removed.
+  Future<List<String>> _sortAndRenamePages(
+    Directory dir,
+    List<String> relativePaths,
+  ) async {
+    final images = relativePaths.where(isImageName).toList()
+      ..sort(naturalCompare);
+    // Delete everything that is not a kept page.
+    final kept = images.toSet();
+    for (final rel in relativePaths) {
+      if (!kept.contains(rel)) {
+        try {
+          await File('${dir.path}/$rel').delete();
+        } catch (_) {}
+      }
+    }
+    // Two passes: first to temp names, then to the final sequential
+    // names. A single pass could clobber an archive file that already
+    // has a target name (e.g. an entry literally called "0001.jpg"
+    // sitting where another page's "0001.jpg" must go).
+    final out = <String>[];
+    final temps = <String>[];
+    var i = 0;
+    for (final rel in images) {
+      i++;
+      final ext = rel.contains('.') ? rel.split('.').last.toLowerCase() : 'jpg';
+      final name = '${i.toString().padLeft(4, '0')}.$ext';
+      final tmp = '__tmp_${i.toString().padLeft(4, '0')}.$ext';
+      await File('${dir.path}/$rel').rename('${dir.path}/$tmp');
+      temps.add(tmp);
+      out.add(name);
+    }
+    for (var j = 0; j < temps.length; j++) {
+      await File('${dir.path}/${temps[j]}').rename('${dir.path}/${out[j]}');
+    }
+    // Remove subfolders left empty by the moves.
+    try {
+      await for (final e in dir.list()) {
+        if (e is Directory) {
+          try {
+            await e.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// BMP pages cannot be shown by Flutter: convert each to JPEG in
+  /// place (native BitmapFactory) and point the page list at the
+  /// JPEG. A page that will not convert stays a BMP and the reader
+  /// shows its "could not load this page" message for that page
+  /// instead of losing the whole book.
+  Future<List<String>> _convertBmpPages(
+    Directory dir,
+    List<String> pageFiles,
+  ) async {
+    final out = <String>[];
+    for (final f in pageFiles) {
+      if (!f.toLowerCase().endsWith('.bmp')) {
+        out.add(f);
+        continue;
+      }
+      final src = File('${dir.path}/$f');
+      final dstName = '${f.substring(0, f.length - 4)}.jpg';
+      final dst = File('${dir.path}/$dstName');
+      final ok = await NativeBridge.convertToJpeg(
+        path: src.path,
+        destPath: dst.path,
+      );
+      if (ok) {
+        try {
+          await src.delete();
+        } catch (_) {}
+        out.add(dstName);
+      } else {
+        out.add(f);
+      }
+    }
+    return out;
   }
 
   /// Persists a per-document change (reading style, panel count, layout).
@@ -484,6 +784,15 @@ class Library extends ChangeNotifier {
     notifyListeners();
     try {
       await File(doc.path).delete();
+    } catch (_) {}
+    // Drop the extracted pages folder for a comic / single image.
+    // (For an image doc.path already lives inside it, so the folder
+    // is empty by now; deleting it is still safe.)
+    try {
+      if (_dir != null) {
+        final dir = Directory(comicsDirFor(doc.id));
+        if (await dir.exists()) await dir.delete(recursive: true);
+      }
     } catch (_) {}
     // Drop cached page renders for this doc.
     try {

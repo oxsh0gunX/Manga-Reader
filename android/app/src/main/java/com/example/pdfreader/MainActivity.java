@@ -24,6 +24,9 @@ import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -32,6 +35,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -41,11 +45,13 @@ import java.util.concurrent.Executors;
  * PDF Reader host (Phase 1 MVP, plugin-free Dart).
  * Native duties only: SAF file picking (copied into filesDir/pdfs),
  * PdfRenderer page rendering to JPEG cache files, volume-key interception,
- * window brightness, MediaStore screenshot saving, and text sharing.
- * All UI, state, ordering and progress live in Dart.
+ * window brightness, MediaStore screenshot saving, text sharing, 7z
+ * extraction (Commons Compress SevenZFile) and image size / BMP
+ * conversion (BitmapFactory) for comic pages. All UI, state, ordering
+ * and progress live in Dart.
  */
 public class MainActivity extends FlutterActivity {
-    private static final int PICK_PDF = 201;
+    private static final int PICK_FILE = 201;
     private MethodChannel nativeChannel;
     private MethodChannel eventsChannel;
     private MethodChannel.Result pendingPick;
@@ -108,15 +114,50 @@ public class MainActivity extends FlutterActivity {
                         case "getCacheDir":
                             result.success(getCacheDir().getAbsolutePath());
                             break;
-                        case "pickPdf": {
+                        case "pickFile": {
                             pendingPick = result;
                             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                            intent.setType("application/pdf");
+                            // One file per pick: a PDF, a comic archive or a
+                            // single image. The MIME list is a hint for the
+                            // picker UI only — Dart validates the file by
+                            // extension + magic bytes after it is copied.
+                            intent.setType("*/*");
+                            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                                    "application/pdf",
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/x-7z-compressed",
+                                    "application/x-tar",
+                                    "application/tar",
+                                    "application/x-rar-compressed",
+                                    "application/vnd.rar",
+                                    "image/jpeg",
+                                    "image/png",
+                                    "image/webp",
+                                    "image/gif",
+                                    "image/bmp"
+                            });
                             intent.addCategory(Intent.CATEGORY_OPENABLE);
-                            // v2: exactly one PDF per pick. No EXTRA_ALLOW_MULTIPLE.
                             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                             startActivityForResult(
-                                    Intent.createChooser(intent, "Choose a PDF file"), PICK_PDF);
+                                    Intent.createChooser(intent, "Choose a file"), PICK_FILE);
+                            break;
+                        }
+                        case "extractSevenZ": {
+                            String path = call.argument("path");
+                            String destDir = call.argument("destDir");
+                            runPdfTask(() -> extractSevenZ(path, destDir), result);
+                            break;
+                        }
+                        case "imageSize": {
+                            String path = call.argument("path");
+                            runPdfTask(() -> imageSize(path), result);
+                            break;
+                        }
+                        case "convertToJpeg": {
+                            String path = call.argument("path");
+                            String destPath = call.argument("destPath");
+                            runPdfTask(() -> convertToJpeg(path, destPath), result);
                             break;
                         }
                         case "getPageCount": {
@@ -487,6 +528,126 @@ public class MainActivity extends FlutterActivity {
         return out;
     }
 
+    // ---------- comic archives (7z) and image helpers ----------
+
+    private static final java.util.Set<String> IMAGE_EXTS =
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "jpg", "jpeg", "png", "webp", "gif", "bmp"));
+
+    private static boolean isImageEntry(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        int dot = lower.lastIndexOf('.');
+        if (dot < 0) return false;
+        return IMAGE_EXTS.contains(lower.substring(dot + 1));
+    }
+
+    /**
+     * Extracts the image pages of a 7z/CB7 archive into destDir.
+     * Returns the written files' paths relative to destDir, in archive
+     * order (Dart sorts them naturally and renames them). Only image
+     * entries are written; directories and non-image files are skipped
+     * without being read. A crafted entry name can never escape
+     * destDir: every output path is checked against destDir's
+     * canonical path. Runs on the pdfWorker thread.
+     * Verified on the JVM against a real py7zr-made 7z (LZMA2, solid,
+     * with subfolder + non-image entries): pages extract with correct
+     * contents and CRCs. Throws IOException with a "7z: ..." message
+     * for corrupt, encrypted, or unsupported-method archives — Dart
+     * turns that into a plain-language message for the user.
+     */
+    private List<String> extractSevenZ(String path, String destDir) throws Exception {
+        File dest = new File(destDir);
+        if (!dest.exists()) dest.mkdirs();
+        String canonDest = dest.getCanonicalPath();
+        List<String> written = new ArrayList<>();
+        SevenZFile in = null;
+        try {
+            in = new SevenZFile(new File(path));
+            SevenZArchiveEntry entry;
+            byte[] buf = new byte[8192];
+            while ((entry = in.getNextEntry()) != null) {
+                if (entry.isDirectory()) continue;
+                String name = entry.getName();
+                if (!isImageEntry(name)) continue;
+                File out = new File(dest, name);
+                String canonOut = out.getCanonicalPath();
+                if (!canonOut.startsWith(canonDest + File.separator)) {
+                    throw new java.io.IOException("7z: entry escapes the folder: " + name);
+                }
+                File parent = out.getParentFile();
+                if (parent != null) parent.mkdirs();
+                OutputStream os = null;
+                try {
+                    os = new FileOutputStream(out);
+                    long remaining = entry.getSize();
+                    while (remaining > 0) {
+                        int n = in.read(buf, 0, (int) Math.min(buf.length, remaining));
+                        if (n < 0) break;
+                        os.write(buf, 0, n);
+                        remaining -= n;
+                    }
+                } finally {
+                    if (os != null) {
+                        try { os.close(); } catch (Exception ignored) {}
+                    }
+                }
+                written.add(name);
+            }
+        } catch (Exception e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            if (m.toLowerCase(Locale.ROOT).contains("password")) {
+                throw new java.io.IOException(
+                        "7z: this archive is password-protected");
+            }
+            if (m.startsWith("7z: ")) throw e;
+            throw new java.io.IOException("7z: " + m);
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (Exception ignored) {}
+            }
+        }
+        return written;
+    }
+
+    /**
+     * Width/height of an image file from its header only — the pixels
+     * are never decoded, so this is cheap even for a big page. Null
+     * when the file is not a readable image.
+     */
+    private Map<String, Object> imageSize(String path) {
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(path, opts);
+        if (opts.outWidth <= 0 || opts.outHeight <= 0) return null;
+        Map<String, Object> m = new HashMap<>();
+        m.put("width", opts.outWidth);
+        m.put("height", opts.outHeight);
+        return m;
+    }
+
+    /**
+     * Converts an image Flutter cannot decode (BMP) to a JPEG at
+     * destPath. Files over 64MB are refused rather than decoded into
+     * memory. Returns true on success.
+     */
+    private boolean convertToJpeg(String path, String destPath) throws Exception {
+        File src = new File(path);
+        if (!src.exists() || src.length() > 64L * 1024 * 1024) return false;
+        Bitmap bmp = null;
+        OutputStream os = null;
+        try {
+            bmp = BitmapFactory.decodeFile(path);
+            if (bmp == null) return false;
+            os = new FileOutputStream(destPath);
+            return bmp.compress(Bitmap.CompressFormat.JPEG, 92, os);
+        } finally {
+            if (os != null) {
+                try { os.close(); } catch (Exception ignored) {}
+            }
+            if (bmp != null) bmp.recycle();
+        }
+    }
+
     private void splitRect(int[] gray, int W, int H,
             int left, int top, int right, int bottom,
             int depth, List<int[]> leaves) {
@@ -669,7 +830,7 @@ public class MainActivity extends FlutterActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == PICK_PDF && pendingPick != null) {
+        if (requestCode == PICK_FILE && pendingPick != null) {
             MethodChannel.Result r = pendingPick;
             pendingPick = null;
             if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
@@ -680,7 +841,7 @@ public class MainActivity extends FlutterActivity {
                 Uri uri = data.getData();
                 File dir = new File(getFilesDir(), "pdfs");
                 if (!dir.exists()) dir.mkdirs();
-                String displayName = "document.pdf";
+                String displayName = "document";
                 long size = 0;
                 Cursor c = null;
                 try {
@@ -694,7 +855,7 @@ public class MainActivity extends FlutterActivity {
                 } finally {
                     if (c != null) c.close();
                 }
-                if (displayName == null || displayName.isEmpty()) displayName = "document.pdf";
+                if (displayName == null || displayName.isEmpty()) displayName = "document";
                 String safe = displayName.replaceAll("[^A-Za-z0-9._ -]", "_");
                 File dest = uniqueFile(dir, safe);
                 InputStream in = null;

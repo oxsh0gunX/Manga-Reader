@@ -32,7 +32,7 @@ class _HomePageState extends State<HomePage> {
     if (_importing) return;
     setState(() => _importing = true);
     try {
-      final (added, failed, cancelled, duplicate) =
+      final (added, failed, cancelled, duplicate, message) =
           await widget.library.importOne();
       if (!mounted) return;
       if (cancelled) {
@@ -40,16 +40,17 @@ class _HomePageState extends State<HomePage> {
       } else if (duplicate) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('This PDF is already in your library')),
+              content: Text('This file is already in your library')),
         );
       } else if (added == 1) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF added to your library')),
+          const SnackBar(content: Text('Added to your library')),
         );
       } else if (failed == 1) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('That PDF could not be read. It may be corrupted.')),
+          SnackBar(
+              content: Text(message ??
+                  'That file could not be read. It may be corrupted.')),
         );
       }
     } catch (e) {
@@ -295,7 +296,7 @@ class _HomePageState extends State<HomePage> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : const Icon(Icons.add),
-        label: const Text('Import PDF'),
+        label: const Text('Import file'),
       ),
       body: !lib.loaded
           ? const Center(child: CircularProgressIndicator())
@@ -309,22 +310,24 @@ class _HomePageState extends State<HomePage> {
                         const Icon(Icons.picture_as_pdf_outlined, size: 64),
                         const SizedBox(height: 16),
                         const Text(
-                          'No PDFs yet',
+                          'Nothing here yet',
                           style: TextStyle(
                               fontSize: 18, fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Import PDFs from your phone. They stay on your '
-                          'device, your place in each one is remembered, and '
-                          'you can read them in order, one after another.',
+                          'Import PDFs, manga and comics (CBZ, CB7, CBT, '
+                          'ZIP, 7Z, TAR) and single images from your phone. '
+                          'They stay on your device, your place in each one '
+                          'is remembered, and you can read them in order, '
+                          'one after another.',
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 20),
                         FilledButton.icon(
                           onPressed: _import,
                           icon: const Icon(Icons.add),
-                          label: const Text('Import your first PDF'),
+                          label: const Text('Import your first file'),
                         ),
                       ],
                     ),
