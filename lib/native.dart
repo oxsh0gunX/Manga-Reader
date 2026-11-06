@@ -12,16 +12,35 @@ class NativeBridge {
   static Future<String> cacheDir() async =>
       (await _native.invokeMethod<String>('getCacheDir')) ?? '';
 
-  /// Picks exactly ONE file: a PDF, a comic archive (CBZ, CB7, CBT,
-  /// ZIP, 7Z, TAR, ...), or a single image. Native code copies it
-  /// into filesDir/pdfs, so the library keeps working even if the
-  /// original file moves. Returns {name, path, size}, or null if the
-  /// user cancelled. What the file actually is gets decided in Dart
-  /// by extension + magic bytes (see comic.dart), not by the picker.
-  static Future<Map<String, dynamic>?> pickFile() async {
-    final res = await _native.invokeMethod('pickFile');
-    if (res == null) return null;
-    return Map<String, dynamic>.from(res as Map);
+  /// Whether the app has "All files access" (Android 11+). The
+  /// in-app file browser needs it to list the shared storage itself.
+  static Future<bool> isAllFilesAccess() async {
+    final v = await _native.invokeMethod<bool>('isAllFilesAccess');
+    return v == true;
+  }
+
+  /// Opens the system settings screen where the user turns on
+  /// "Allow access to all files" for this app.
+  static Future<void> openAllFilesAccessSettings() async {
+    await _native.invokeMethod('openAllFilesAccessSettings');
+  }
+
+  /// Picks one or more files in a single picker session: PDFs, comic
+  /// archives (CBZ, CB7, CBT, ZIP, 7Z, TAR, ...), or single images.
+  /// Native code copies each one into filesDir/pdfs (unique names),
+  /// so the library keeps working even if the originals move, and
+  /// returns one entry per picked file, in picker order: {name, path,
+  /// size} on success, or {name, error} when that one file could not
+  /// be copied (the rest still come through). An empty list means
+  /// the user cancelled. What each file actually is gets decided in
+  /// Dart by extension + magic bytes (see comic.dart), not by the
+  /// picker.
+  static Future<List<Map<String, dynamic>>> pickFiles() async {
+    final res = await _native.invokeMethod('pickFiles');
+    if (res == null) return [];
+    return (res as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
   }
 
   /// Extracts the image pages of a 7Z/CB7 archive (Commons Compress

@@ -54,6 +54,7 @@ class PdfDoc {
     this.contentHash,
     this.kind = 'pdf',
     this.rtl = false,
+    this.mangaPaged = false,
     this.pageFiles,
   }) : customPanels = customPanels ?? {};
 
@@ -75,11 +76,17 @@ class PdfDoc {
   // reader's menu; only affects page-turn direction, never the
   // reading order (page 0 is always first).
   bool rtl;
+  // Manga mode, one page at a time: false = the strip (pages flow
+  // down, several visible at once), true = a single page, swiped up
+  // and down. Only used when style is 'manga'; saved per document.
+  bool mangaPaged;
   // Page filenames inside filesDir/comics/<id>/, in reading order.
   // Only for kind 'comic'. Null for PDFs and single images.
   final List<String>? pageFiles;
   // Reading style saved per document: horizontal | vertical | panel |
-  // frame | continuous | auto. 'auto' adapts to the page shape.
+  // frame | continuous | manga | auto. 'auto' adapts to the page
+  // shape. 'manga' is top-to-bottom: a continuous strip of pages,
+  // or one page at a time when mangaPaged is on.
   String style;
   // Panels per page for panel/frame modes. 0 = automatic (by page shape).
   int panels;
@@ -119,6 +126,7 @@ class PdfDoc {
         'contentHash': contentHash,
         'kind': kind,
         'rtl': rtl,
+        'mangaPaged': mangaPaged,
         'pageFiles': pageFiles,
       };
 
@@ -139,7 +147,7 @@ class PdfDoc {
     final pc = numInt('pageCount', 0);
     final lp = pc > 0 ? numInt('lastPage', 0).clamp(0, pc - 1) : 0;
     const styles = {
-      'horizontal', 'vertical', 'panel', 'frame', 'continuous', 'auto'
+      'horizontal', 'vertical', 'panel', 'frame', 'continuous', 'manga', 'auto'
     };
     final style = str('style', 'horizontal');
     const layouts = {'auto', 'vertical', 'grid'};
@@ -166,6 +174,7 @@ class PdfDoc {
       contentHash: j['contentHash'] is String ? j['contentHash'] as String : null,
       kind: kinds.contains(kind) ? kind : 'pdf',
       rtl: j['rtl'] is bool ? j['rtl'] as bool : false,
+      mangaPaged: j['mangaPaged'] == true,
       pageFiles: pageFiles,
     );
   }
@@ -207,6 +216,7 @@ class AppSettings {
     this.frameOverlap = 0.08,
     this.frameZoom = 1.0,
     this.controlsHintShown = false,
+    this.autoScrollSeconds = 3,
   });
 
   bool volumeEnabled;
@@ -229,6 +239,11 @@ class AppSettings {
   double frameOverlap;
   double frameZoom;
   bool controlsHintShown;
+  // Auto-scroll (Manga mode): seconds per page. 1, 2, 3, 5 or 10 from
+  // the presets, or any custom value 1-300. Saved, so the user's
+  // reading speed is remembered; whether auto-scroll is actually
+  // running right now is session-only and never saved.
+  int autoScrollSeconds;
 
   Map<String, dynamic> toJson() => {
         'volumeEnabled': volumeEnabled,
@@ -243,6 +258,7 @@ class AppSettings {
         'frameOverlap': frameOverlap,
         'frameZoom': frameZoom,
         'controlsHintShown': controlsHintShown,
+        'autoScrollSeconds': autoScrollSeconds,
       };
 
   static AppSettings fromJson(Map<String, dynamic> j) {
@@ -280,6 +296,7 @@ class AppSettings {
       frameOverlap: numD('frameOverlap', 0.08).clamp(0.0, 0.2),
       frameZoom: frameZoom > 0 ? frameZoom : 1.0,
       controlsHintShown: flag('controlsHintShown', false),
+      autoScrollSeconds: numI('autoScrollSeconds', 3).clamp(1, 300),
     );
   }
 }
@@ -294,6 +311,27 @@ class AppSettings {
 /// instead of a generic "could not be read".
 enum ImportOutcome { added, duplicate, failed, unsupported }
 
+/// One file that could not be imported, with the plain-language reason.
+class ImportFailure {
+  ImportFailure(this.name, this.message);
+  final String name;
+  final String message;
+}
+
+/// The outcome of importing a whole picker session. Every picked file
+/// is accounted for — added, already in the library, or failed with a
+/// reason — so the UI can show a real summary instead of a single
+/// yes/no, and [done] tracks progress while the import is running.
+class ImportSummary {
+  ImportSummary({required this.total, this.cancelled = false});
+  final int total;
+  final bool cancelled;
+  final List<String> added = [];
+  final List<String> duplicates = [];
+  final List<ImportFailure> failed = [];
+  int done = 0;
+}
+
 /// Library + settings, persisted as JSON in the app's private files dir.
 /// The list order IS the reading sequence: reordering it reorders the
 /// "Next Document" chain, and it is saved on every change.
@@ -307,7 +345,7 @@ class Library extends ChangeNotifier {
 
   /// Plain-language reason for the last failed or unsupported import,
   /// or null when the last import added a document / was a duplicate.
-  /// Read it right after [importOne]/[importPicked] returns.
+  /// Read it right after [importMany]/[importPicked] returns.
   String? lastImportMessage;
 
   String get _libraryPath => '$_dir/library.json';
@@ -402,26 +440,122 @@ class Library extends ChangeNotifier {
     return r.take(8).toList();
   }
 
-  /// Imports exactly ONE file (v2 rule: the picker selects one file
-  /// at a time; the user imports more by tapping Import again).
-  /// Returns (added, failed, cancelled, duplicate, message) — the
-  /// message is the plain-language reason when an import failed or
-  /// hit an unsupported format, null otherwise.
-  Future<(int, int, bool, bool, String?)> importOne() async {
-    final p = await NativeBridge.pickFile();
-    if (p == null) return (0, 0, true, false, null);
-    final outcome = await importPicked(
-      path: p['path'] as String,
-      name: p['name'] as String,
-      size: (p['size'] as num?)?.toInt() ?? 0,
-    );
-    return switch (outcome) {
-      ImportOutcome.added => (1, 0, false, false, null),
-      ImportOutcome.duplicate => (0, 0, false, true, null),
-      ImportOutcome.failed => (0, 1, false, false, lastImportMessage),
-      ImportOutcome.unsupported =>
-        (0, 1, false, false, lastImportMessage),
-    };
+  /// Imports a whole picker session: one call picks as many files as
+  /// the user chose (one file is just a session of one), then every
+  /// file is imported in turn. See [importPickedList] for the loop.
+  Future<ImportSummary> importMany({
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final picked = await NativeBridge.pickFiles();
+    return importPickedList(picked, onProgress: onProgress);
+  }
+
+  /// Imports files the user chose in the in-app browser: each one is
+  /// first copied into the app's own files (filesDir/pdfs, unique
+  /// name, like the system picker does), then imported through the
+  /// same [importPicked] path as every other import — so duplicates,
+  /// unsupported formats and corrupt files behave identically. One
+  /// bad file never stops the rest.
+  Future<ImportSummary> importLocalFiles(
+    List<String> paths, {
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (_dir == null) {
+      final summary = ImportSummary(total: paths.length);
+      for (final p in paths) {
+        summary.failed.add(
+            ImportFailure(_baseName(p), 'Library not ready. Try again.'));
+        summary.done++;
+      }
+      return summary;
+    }
+    final pdfsDir = Directory('$_dir/pdfs');
+    await pdfsDir.create(recursive: true);
+    final entries = <Map<String, dynamic>>[];
+    for (final p in paths) {
+      final name = _baseName(p);
+      try {
+        final src = File(p);
+        final size = await src.length();
+        final dest = await _uniqueCopyTarget(pdfsDir, name);
+        await src.copy(dest.path);
+        entries.add({'name': name, 'path': dest.path, 'size': size});
+      } catch (_) {
+        entries.add({'name': name, 'error': 'Could not copy this file.'});
+      }
+    }
+    return importPickedList(entries, onProgress: onProgress);
+  }
+
+  /// The shared import loop: every entry is imported in turn through
+  /// [importPicked], so duplicates, unsupported formats and corrupt
+  /// files are all handled exactly as they were for a single import.
+  /// One bad file never stops the rest: its failure is recorded and
+  /// the loop goes on. The returned summary accounts for every picked
+  /// file, and [onProgress] fires after each file (done, total) so
+  /// the UI can show real progress. An entry with an 'error' key
+  /// (its copy failed) counts as failed without being imported.
+  Future<ImportSummary> importPickedList(
+    List<Map<String, dynamic>> picked, {
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (picked.isEmpty) return ImportSummary(total: 0, cancelled: true);
+    final summary = ImportSummary(total: picked.length);
+    for (final p in picked) {
+      final name = (p['name'] as String?)?.isNotEmpty == true
+          ? p['name'] as String
+          : 'file';
+      if (p.containsKey('error')) {
+        // Native could not copy this one file; the rest still import.
+        summary.failed.add(ImportFailure(
+          name,
+          (p['error'] as String?) ?? 'Could not copy this file.',
+        ));
+      } else {
+        final outcome = await importPicked(
+          path: p['path'] as String,
+          name: name,
+          size: (p['size'] as num?)?.toInt() ?? 0,
+        );
+        switch (outcome) {
+          case ImportOutcome.added:
+            summary.added.add(name);
+          case ImportOutcome.duplicate:
+            summary.duplicates.add(name);
+          case ImportOutcome.failed:
+          case ImportOutcome.unsupported:
+            summary.failed.add(ImportFailure(
+              name,
+              lastImportMessage ??
+                  'That file could not be read. It may be corrupted.',
+            ));
+        }
+      }
+      summary.done++;
+      onProgress?.call(summary.done, summary.total);
+    }
+    return summary;
+  }
+
+  static String _baseName(String path) {
+    final i = path.lastIndexOf('/');
+    return i >= 0 ? path.substring(i + 1) : path;
+  }
+
+  /// A copy target in [dir] that never clobbers an existing file:
+  /// "name (2).pdf", "name (3).pdf", ... — the same rule the native
+  /// picker uses.
+  Future<File> _uniqueCopyTarget(Directory dir, String name) async {
+    var candidate = File('${dir.path}/$name');
+    if (!await candidate.exists()) return candidate;
+    final dot = name.lastIndexOf('.');
+    final base = dot > 0 ? name.substring(0, dot) : name;
+    final ext = dot > 0 ? name.substring(dot) : '';
+    var i = 2;
+    while (await File('${dir.path}/$base ($i)$ext').exists()) {
+      i++;
+    }
+    return File('${dir.path}/$base ($i)$ext');
   }
 
   /// The part of the import after picking, kept separate so tests can

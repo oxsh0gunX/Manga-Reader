@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'file_browser.dart';
 import 'library.dart';
 import 'reader.dart';
 import 'settings_page.dart';
@@ -19,7 +20,6 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   bool _searching = false;
   String _query = '';
-  bool _importing = false;
 
   String _sizeLabel(int bytes) {
     if (bytes <= 0) return '';
@@ -28,40 +28,17 @@ class _HomePageState extends State<HomePage> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  Future<void> _import() async {
-    if (_importing) return;
-    setState(() => _importing = true);
-    try {
-      final (added, failed, cancelled, duplicate, message) =
-          await widget.library.importOne();
-      if (!mounted) return;
-      if (cancelled) {
-        // User closed the picker without choosing: say nothing.
-      } else if (duplicate) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('This file is already in your library')),
-        );
-      } else if (added == 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Added to your library')),
-        );
-      } else if (failed == 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(message ??
-                  'That file could not be read. It may be corrupted.')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Import failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _importing = false);
-    }
+  /// Opens the in-app file browser: the system picker on this phone
+  /// will not return multi-select picks, so the app lists the shared
+  /// storage itself and lets the user tick several files at once.
+  /// (The system picker is still available from the browser page's
+  /// menu, and it runs the same import through [runImportJob].)
+  Future<void> _openBrowser() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FileBrowserPage(library: widget.library),
+      ),
+    );
   }
 
   void _open(PdfDoc doc) {
@@ -255,7 +232,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 onChanged: (v) => setState(() => _query = v),
               )
-            : const Text('PDF Reader'),
+            : const Text('Manga Reader'),
         actions: [
           IconButton(
             tooltip: 'Search',
@@ -288,15 +265,9 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _import,
-        icon: _importing
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.add),
-        label: const Text('Import file'),
+        onPressed: _openBrowser,
+        icon: const Icon(Icons.add),
+        label: const Text('Import files'),
       ),
       body: !lib.loaded
           ? const Center(child: CircularProgressIndicator())
@@ -325,7 +296,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const SizedBox(height: 20),
                         FilledButton.icon(
-                          onPressed: _import,
+                          onPressed: _openBrowser,
                           icon: const Icon(Icons.add),
                           label: const Text('Import your first file'),
                         ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -28,7 +29,7 @@ class ReaderPage extends StatefulWidget {
 }
 
 class _ReaderPageState extends State<ReaderPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late PdfDoc _doc;
   late int _seqIndex;
   late PageController _pageController;
@@ -56,9 +57,34 @@ class _ReaderPageState extends State<ReaderPage>
   String? _lastScreenshotUri;
   double _split = 0.5;
 
+  // ---------- auto-scroll (Manga mode only) ----------
+  // 'off' | 'running' | 'paused'. The state is session-only: it is
+  // never saved, so leaving the reader or the app never restarts
+  // scrolling on its own. Only the interval (AppSettings) is saved.
+  String _autoScrollState = 'off';
+  // The one timer. It is always cancelled before a new one is made,
+  // so two timers can never run at once.
+  Timer? _autoScrollTimer;
+  // The page an auto-scroll tick is turning to, or null. When the
+  // PageView reports that page, it is the tick's own turn — not a
+  // manual swipe — so the interval clock is not reset for it.
+  int? _autoScrollTargetPage;
+
+  // ---------- manga auto-next ----------
+  // The strip's "next document" switch is scheduled a moment after
+  // the user reaches the very bottom of the last page, so scrolling
+  // back up cancels it. Cancelled on any document switch and when
+  // the reader closes.
+  Timer? _autoNextTimer;
+  // True once the user has turned a page or scrolled themself. The
+  // auto-next never fires from the opening jump to a saved page:
+  // opening a short book must not yank the user to the next one.
+  bool _userNavigated = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _doc = widget.doc;
     _seqIndex = widget.library.indexOf(_doc);
     _page = _safePage(_doc, _doc.lastPage);
@@ -109,11 +135,10 @@ class _ReaderPageState extends State<ReaderPage>
         });
       }
     });
-    // Vertical / continuous modes start at the remembered page.
+    // Scroll modes (vertical, continuous, manga strip) start at the
+    // remembered page.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final style = _effectiveStyle();
-      if ((style == 'vertical' || style == 'continuous') &&
-          _scrollController.hasClients) {
+      if (_isScrollMode && _scrollController.hasClients) {
         _scrollToPage(_page, animate: false);
       }
     });
@@ -138,6 +163,9 @@ class _ReaderPageState extends State<ReaderPage>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cancelAutoScrollTimer();
+    _cancelAutoNext();
     _cleanup();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -148,9 +176,24 @@ class _ReaderPageState extends State<ReaderPage>
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Auto-scroll pauses when the app goes into the background (or a
+    // system interruption arrives). It never resumes by itself: the
+    // user taps Resume. Leaving the reader stops it outright
+    // (_cleanup), so nothing ever starts scrolling after the user
+    // has gone.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      if (_autoScrollState == 'running') _pauseAutoScroll();
+    }
+  }
+
   void _cleanup() {
     if (_cleanedUp) return;
     _cleanedUp = true;
+    _stopAutoScroll();
+    _cancelAutoNext();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     NativeBridge.setVolumeEnabled(false);
     NativeBridge.clearVolumeEvent();
@@ -183,7 +226,35 @@ class _ReaderPageState extends State<ReaderPage>
   /// arena over a tap, and a long-press wins over a tap, so zooming
   /// can never turn a page by accident.
   void _onTapUp(TapUpDetails details) {
-    if (_showText || _effectiveStyle() != 'horizontal') {
+    if (_showText) {
+      _toggleControls();
+      return;
+    }
+    // Manga mode, one page at a time: the same thirds idea, but top
+    // to bottom — top turns back a page, bottom turns forward, the
+    // middle only toggles the controls. The strip, like the other
+    // scroll modes, keeps plain tap = toggle controls.
+    if (_effectiveStyle() == 'manga' && _doc.mangaPaged) {
+      final box = _shotKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize || box.size.height <= 0) {
+        _toggleControls();
+        return;
+      }
+      final local = box.globalToLocal(details.globalPosition);
+      final third = box.size.height / 3;
+      if (local.dy < third) {
+        if (!_isFirstPage) _goToPage(_page - 1);
+      } else if (local.dy > 2 * third) {
+        // In Manga mode the bottom tap at the last page opens the
+        // next document (from its first page); with no next document
+        // it simply stays put.
+        _nextPageOrDoc();
+      } else {
+        _toggleControls();
+      }
+      return;
+    }
+    if (_effectiveStyle() != 'horizontal') {
       _toggleControls();
       return;
     }
@@ -244,7 +315,16 @@ class _ReaderPageState extends State<ReaderPage>
           });
         }
         if (preloadNeighbours) {
-          for (final n in [page - 1, page + 1]) {
+          // Comic pages are just a header read, so in Manga mode the
+          // next two pages' sizes are fetched ahead too: the strip
+          // then knows every upcoming page's real height before the
+          // user scrolls there, and the list never jumps as images
+          // load. PDFs keep immediate neighbours only — rendering
+          // extra PDF pages would cost real work and storage.
+          final ahead = _effectiveStyle() == 'manga'
+              ? [page - 2, page - 1, page + 1, page + 2]
+              : [page - 1, page + 1];
+          for (final n in ahead) {
             if (n >= 0 && n < doc.pageCount) {
               _pageFutureFor(doc, n, preloadNeighbours: false);
             }
@@ -338,7 +418,12 @@ class _ReaderPageState extends State<ReaderPage>
 
   bool get _isScrollMode {
     final s = _effectiveStyle();
-    return s == 'vertical' || s == 'continuous';
+    // Manga mode scrolls top to bottom as a strip, unless the user
+    // switched it to one page at a time (mangaPaged), in which case
+    // it is a vertical PageView instead.
+    return s == 'vertical' ||
+        s == 'continuous' ||
+        (s == 'manga' && !_doc.mangaPaged);
   }
 
   String _frameLayout() {
@@ -497,7 +582,7 @@ class _ReaderPageState extends State<ReaderPage>
 
   // ---------- navigation ----------
 
-  void _goToPage(int page, {bool keepFrame = false}) {
+  void _goToPage(int page, {bool keepFrame = false, bool fromAutoScroll = false}) {
     if (_doc.pageCount <= 0) return;
     final target = page.clamp(0, _doc.pageCount - 1);
     final wasScroll = _isScrollMode;
@@ -508,6 +593,15 @@ class _ReaderPageState extends State<ReaderPage>
     });
     _resetZoomInstant();
     widget.library.saveProgress(_doc, target);
+    // A manual turn restarts the auto-scroll interval, so the user
+    // gets a full interval on the page they turned to. The tick's
+    // own turn does not reset it (the tick schedules the next one).
+    // A manual turn also marks the user as having navigated, which
+    // is what arms the manga auto-next guard.
+    if (!fromAutoScroll) {
+      _userNavigated = true;
+      if (_autoScrollState == 'running') _resetAutoScrollClock();
+    }
     if (wasScroll) {
       if (_scrollController.hasClients) {
         _scrollToPage(target);
@@ -519,13 +613,25 @@ class _ReaderPageState extends State<ReaderPage>
     } else if (_pageController.hasClients && target != _pageController.page?.round()) {
       _pageController.animateToPage(
         target,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
+        duration: _turnDuration,
+        curve: _turnCurve,
       );
     }
   }
 
   void _onPageChanged(int page) {
+    // A stale report from the previous document's PageView — its
+    // animation finishing after a document switch — must not be
+    // saved as this document's progress. Accept a report only if it
+    // is the page this reader is already on (a turn _goToPage set)
+    // or the page the controller is actually on (a swipe). A stale
+    // report agrees with neither: after a switch the reader is on
+    // the new document's first page and the new controller has no
+    // clients yet, or is on page 0.
+    final onControllerPage = _pageController.hasClients &&
+        _pageController.page != null &&
+        page == _pageController.page!.round();
+    if (page != _page && !onControllerPage) return;
     setState(() {
       _page = page;
       _previewPage = null;
@@ -533,6 +639,18 @@ class _ReaderPageState extends State<ReaderPage>
     });
     _resetZoomInstant();
     widget.library.saveProgress(_doc, page);
+    // A page change from a swipe is the user navigating: it marks
+    // them as having read (for the manga auto-next guard) and, when
+    // auto-scroll runs, restarts the interval. A change to the page
+    // an auto-scroll tick is turning to is the tick's own turn, and
+    // does neither.
+    if (_autoScrollTargetPage != null && page == _autoScrollTargetPage) {
+      _autoScrollTargetPage = null;
+    } else {
+      _autoScrollTargetPage = null;
+      _userNavigated = true;
+      _resetAutoScrollClock();
+    }
   }
 
   void _goToFrame(int frame) {
@@ -572,7 +690,16 @@ class _ReaderPageState extends State<ReaderPage>
   // sequence instead of stopping. Mirrors _nextFrame/_prevFrame.
   void _nextPageOrDoc() {
     if (_isLastPage) {
-      if (_nextDoc != null) _switchDoc(_nextDoc!);
+      if (_nextDoc != null) {
+        // Manga mode: the next document opens in Manga mode, from
+        // its first page. Every other mode keeps its existing
+        // behaviour (resume at the saved page).
+        if (_effectiveStyle() == 'manga') {
+          _switchDocManga(_nextDoc!);
+        } else {
+          _switchDoc(_nextDoc!);
+        }
+      }
     } else {
       _goToPage(_page + 1);
     }
@@ -586,9 +713,103 @@ class _ReaderPageState extends State<ReaderPage>
     }
   }
 
+  // ---------- auto-scroll (Manga mode only) ----------
+
+  bool get _autoScrollRunning => _autoScrollState == 'running';
+  int get _autoScrollInterval =>
+      widget.library.settings.autoScrollSeconds;
+
+  void _cancelAutoScrollTimer() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+  }
+
+  // (Re)starts the interval clock: exactly one timer exists at any
+  // time, because the old one is always cancelled first.
+  void _scheduleAutoScrollTick() {
+    _cancelAutoScrollTimer();
+    if (!_autoScrollRunning || !mounted) return;
+    _autoScrollTimer =
+        Timer(Duration(seconds: _autoScrollInterval), _autoScrollTick);
+  }
+
+  // A manual turn restarts the interval, so the user gets a full
+  // interval on the page they turned to. Called from _goToPage,
+  // _onPageChanged and _onScroll — never from the tick itself.
+  void _resetAutoScrollClock() {
+    if (_autoScrollRunning) _scheduleAutoScrollTick();
+  }
+
+  void _startAutoScroll() {
+    if (_effectiveStyle() != 'manga') return;
+    if (_autoScrollState == 'running') {
+      // Starting twice must not stack a second timer.
+      _scheduleAutoScrollTick();
+      return;
+    }
+    setState(() => _autoScrollState = 'running');
+    _scheduleAutoScrollTick();
+  }
+
+  void _pauseAutoScroll() {
+    if (_autoScrollState != 'running') return;
+    _cancelAutoScrollTimer();
+    setState(() => _autoScrollState = 'paused');
+  }
+
+  void _resumeAutoScroll() {
+    if (_autoScrollState != 'paused') return;
+    setState(() => _autoScrollState = 'running');
+    _scheduleAutoScrollTick();
+  }
+
+  void _stopAutoScroll() {
+    _cancelAutoScrollTimer();
+    _autoScrollTargetPage = null;
+    // _cleanup sets _cleanedUp before calling this from dispose, and
+    // setState is illegal while the widget is being torn down.
+    if (_autoScrollState != 'off' && mounted && !_cleanedUp) {
+      setState(() => _autoScrollState = 'off');
+    } else {
+      _autoScrollState = 'off';
+    }
+  }
+
+  Future<void> _autoScrollTick() async {
+    if (!_autoScrollRunning || !mounted) return;
+    if (_isLastPage) {
+      // End of this document: in Manga mode, move to the next
+      // document and keep scrolling from its first page. At the
+      // end of the library, stop instead of looping or restarting.
+      final next = _nextDoc;
+      if (next == null) {
+        _stopAutoScroll();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('End of library — auto-scroll stopped')),
+          );
+        }
+        return;
+      }
+      await _switchDocManga(next);
+      // _switchDoc already restarted the clock for the new
+      // document's first page; nothing more to schedule here.
+      return;
+    }
+    _autoScrollTargetPage = _page + 1;
+    _goToPage(_page + 1, fromAutoScroll: true);
+    _scheduleAutoScrollTick();
+  }
+
   void _switchDoc(PdfDoc doc, {int? page}) {
     final idx = widget.library.indexOf(doc);
     if (idx < 0) return;
+    // A switch cancels any pending manga auto-next, and the new
+    // document starts un-navigated: its auto-next must not fire
+    // from the opening jump to the saved page.
+    _cancelAutoNext();
+    _userNavigated = false;
     final old = _pageController;
     final p = _safePage(doc, page ?? doc.lastPage);
     setState(() {
@@ -605,10 +826,37 @@ class _ReaderPageState extends State<ReaderPage>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Opened ${doc.name}')),
     );
+    // A running auto-scroll keeps going into the new document, with
+    // a full interval on its first page.
+    _resetAutoScrollClock();
     if (_isScrollMode) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scrollToPage(p, animate: false);
       });
+    }
+  }
+
+  // True while a manga next-document switch is in flight (the style
+  // save is async): a second switch attempt in the same moment —
+  // e.g. more overscroll notifications from one long swipe — is
+  // ignored instead of chaining through documents.
+  bool _mangaSwitching = false;
+
+  /// Manga mode's next-document switch: the next document opens in
+  /// Manga mode too (same strip / single-page view), from its first
+  /// page. The style is saved on the document, so it stays Manga
+  /// mode afterwards as well.
+  Future<void> _switchDocManga(PdfDoc doc) async {
+    if (_mangaSwitching) return;
+    _mangaSwitching = true;
+    try {
+      doc.style = 'manga';
+      doc.mangaPaged = _doc.mangaPaged;
+      await widget.library.saveDoc(doc);
+      if (!mounted) return;
+      _switchDoc(doc, page: 0);
+    } finally {
+      _mangaSwitching = false;
     }
   }
 
@@ -634,13 +882,27 @@ class _ReaderPageState extends State<ReaderPage>
     return [for (int p = 0; p < _doc.pageCount; p++) _Entry(_doc, p)];
   }
 
+  // The gap between pages in a scroll view. Manga mode is seamless:
+  // the 8px gap the other scroll modes use shows as a black band
+  // between pages, and a manga spread is one image across two pages,
+  // so the pages must touch. Every other mode keeps its 8px gap.
+  double get _pageGap => _effectiveStyle() == 'manga' ? 0 : 8;
+
+  // Page turns: manga mode glides a little slower and softer than
+  // the standard turn, so long strips do not feel abrupt.
+  Duration get _turnDuration => _effectiveStyle() == 'manga'
+      ? const Duration(milliseconds: 400)
+      : const Duration(milliseconds: 300);
+  Curve get _turnCurve =>
+      _effectiveStyle() == 'manga' ? Curves.easeInOutCubic : Curves.easeInOut;
+
   double _itemHeight(_Entry e, double viewportWidth) {
     final info = _infoFor(e.doc, e.page);
-    if (info == null) return viewportWidth * 1.414 + 8;
+    if (info == null) return viewportWidth * 1.414 + _pageGap;
     final w = (info['width'] as num?)?.toDouble() ?? 1;
     final h = (info['height'] as num?)?.toDouble() ?? 1.414;
-    if (w <= 0) return viewportWidth * 1.414 + 8;
-    return viewportWidth * h / w + 8;
+    if (w <= 0) return viewportWidth * 1.414 + _pageGap;
+    return viewportWidth * h / w + _pageGap;
   }
 
   void _onScroll() {
@@ -659,6 +921,17 @@ class _ReaderPageState extends State<ReaderPage>
       }
       found = e;
     }
+    if (_scrollTarget != null) {
+      // A volume key or jump is scrolling to a page: the position
+      // still sits on the old page mid-animation, and must not push
+      // the page (and the saved progress) backwards. Once the anchor
+      // reaches the target page the programmatic scroll is done.
+      if (found.doc.id == _doc.id && found.page == _scrollTarget) {
+        _scrollTarget = null;
+      } else {
+        return;
+      }
+    }
     if (found.page != _page || found.doc.id != _doc.id) {
       final switched = found.doc.id != _doc.id;
       setState(() {
@@ -669,8 +942,65 @@ class _ReaderPageState extends State<ReaderPage>
       });
       if (switched) widget.library.markOpened(found.doc);
       widget.library.saveProgress(found.doc, found.page);
+      // A scroll-driven page change is the user navigating (for the
+      // manga auto-next guard); it also restarts the auto-scroll
+      // interval, so auto-scroll waits while the user scrolls.
+      _userNavigated = true;
+      _resetAutoScrollClock();
+    }
+    _checkMangaAutoNext();
+  }
+
+  void _checkMangaAutoNext() {
+    // Manga strip only: when the user has scrolled to the very
+    // bottom of the document — the last page is fully in view — the
+    // next document opens by itself after a short pause (scrolling
+    // back up cancels it). The scroll position is the signal, not
+    // the tracked page: the anchor that tracks the current page only
+    // moves to a page once its top nears the top of the screen, and
+    // the last page's top can never get there when the page is
+    // shorter than the screen. Other styles keep their existing
+    // behaviour, and the last document in the library simply stops.
+    if (_effectiveStyle() != 'manga' ||
+        !_userNavigated ||
+        !_scrollController.hasClients) {
+      _cancelAutoNext();
+      return;
+    }
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 4) {
+      _scheduleAutoNext();
+    } else {
+      _cancelAutoNext();
     }
   }
+
+  void _scheduleAutoNext() {
+    if (_autoNextTimer?.isActive == true) return;
+    _autoNextTimer = Timer(const Duration(milliseconds: 1200), _autoNextNow);
+  }
+
+  void _cancelAutoNext() {
+    _autoNextTimer?.cancel();
+    _autoNextTimer = null;
+  }
+
+  Future<void> _autoNextNow() async {
+    _autoNextTimer = null;
+    if (!mounted || _effectiveStyle() != 'manga') return;
+    if (_nextDoc == null) return;
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    if (pos.pixels < pos.maxScrollExtent - 4) return;
+    await _switchDocManga(_nextDoc!);
+  }
+
+  // The page a volume key or jump is scrolling to, or null when no
+  // programmatic scroll is in flight. While it is set, _onScroll
+  // ignores the mid-animation position (see there). Cleared when the
+  // animation finishes, when the anchor reaches the target, or when
+  // the user grabs the list and drags it themself.
+  int? _scrollTarget;
 
   void _scrollToPage(int page, {bool animate = true}) {
     if (!_scrollController.hasClients) return;
@@ -682,12 +1012,18 @@ class _ReaderPageState extends State<ReaderPage>
       offset += _itemHeight(e, vw);
     }
     if (animate) {
-      _scrollController.animateTo(
+      _scrollTarget = page;
+      _scrollController
+          .animateTo(
         offset,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
+        duration: _turnDuration,
+        curve: _turnCurve,
+      )
+          .whenComplete(() {
+        _scrollTarget = null;
+      });
     } else {
+      _scrollTarget = null;
       _scrollController.jumpTo(offset);
     }
   }
@@ -871,8 +1207,25 @@ class _ReaderPageState extends State<ReaderPage>
     }
   }
 
+  /// After a style change (or a manga strip / single-page switch),
+  /// land the view on the current page: scroll to it in scroll
+  /// modes, jump to it in page modes.
+  void _afterStyleChange() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_isScrollMode) {
+        _scrollToPage(_page, animate: false);
+      } else if (_pageController.hasClients) {
+        _pageController.jumpToPage(_page);
+      }
+    });
+  }
+
   void _openStyleSheet() {
     const styles = [
+      ('manga', 'Manga mode',
+          'Top to bottom, made for manga: pages flow down, several '
+          'visible at once.'),
       ('horizontal', 'Horizontal', 'Page by page, swipe left and right.'),
       ('vertical', 'Vertical scrolling', 'Pages flow down in one scroll.'),
       ('panel', 'Panel by panel', 'One comic panel at a time, in a grid.'),
@@ -910,16 +1263,55 @@ class _ReaderPageState extends State<ReaderPage>
                     setSheet(() {});
                     if (mounted) setState(() {});
                     Navigator.of(ctx).pop();
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!mounted) return;
-                      if (_isScrollMode) {
-                        _scrollToPage(_page, animate: false);
-                      } else if (_pageController.hasClients) {
-                        _pageController.jumpToPage(_page);
-                      }
-                    });
+                    _afterStyleChange();
                   },
                 ),
+              // Manga mode has two views, and the choice matters most
+              // for two-page spreads (one image running across two
+              // pages): the strip shows both pages of a spread
+              // together, one above the other, while single page
+              // shows one page at a time. The sheet stays open here
+              // so the user can flip between the two and see the
+              // reader change behind it.
+              if (_doc.style == 'manga') ...[
+                RadioListTile<String>(
+                  title: const Text('Strip'),
+                  subtitle: const Text(
+                      'Pages flow down, several at once — both pages '
+                      'of a spread show together.',
+                      style: TextStyle(fontSize: 13)),
+                  value: 'strip',
+                  groupValue: _doc.mangaPaged ? 'single' : 'strip',
+                  contentPadding:
+                      const EdgeInsets.only(left: 32, right: 16),
+                  onChanged: (v) async {
+                    if (v == null) return;
+                    _doc.mangaPaged = false;
+                    await widget.library.saveDoc(_doc);
+                    setSheet(() {});
+                    if (mounted) setState(() {});
+                    _afterStyleChange();
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('Single page'),
+                  subtitle: const Text(
+                      'One page at a time, swipe up and down.',
+                      style: TextStyle(fontSize: 13)),
+                  value: 'single',
+                  groupValue: _doc.mangaPaged ? 'single' : 'strip',
+                  contentPadding:
+                      const EdgeInsets.only(left: 32, right: 16),
+                  onChanged: (v) async {
+                    if (v == null) return;
+                    _doc.mangaPaged = true;
+                    await widget.library.saveDoc(_doc);
+                    setSheet(() {});
+                    if (mounted) setState(() {});
+                    _afterStyleChange();
+                  },
+                ),
+              ],
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 16),
                   child: Text(
@@ -934,6 +1326,166 @@ class _ReaderPageState extends State<ReaderPage>
         ),
       ),
     );
+  }
+
+  void _openAutoScrollSheet() {
+    const presets = [1, 2, 3, 5, 10];
+    final settings = widget.library.settings;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final interval = settings.autoScrollSeconds;
+          final isCustom = !presets.contains(interval);
+          final plural = interval == 1 ? '' : 's';
+          final status = _autoScrollState == 'running'
+              ? 'Scrolling • $interval second$plural per page'
+              : _autoScrollState == 'paused'
+                  ? 'Paused • $interval second$plural per page'
+                  : 'Off • $interval second$plural per page';
+          return SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 12, 8, 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Text('Auto-scroll',
+                        style: TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w700)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(status,
+                        style: const TextStyle(fontSize: 13)),
+                  ),
+                  for (final s in presets)
+                    RadioListTile<int>(
+                      title: Text(
+                          '$s second${s == 1 ? '' : 's'} per page'),
+                      value: s,
+                      groupValue: isCustom ? null : interval,
+                      onChanged: (v) async {
+                        if (v == null) return;
+                        settings.autoScrollSeconds = v;
+                        await widget.library.saveSettings();
+                        setSheet(() {});
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                  RadioListTile<int>(
+                    title: Text(isCustom
+                        ? 'Custom: $interval seconds per page'
+                        : 'Custom…'),
+                    value: -1,
+                    groupValue: isCustom ? -1 : null,
+                    onChanged: (_) async {
+                      final v = await _pickCustomInterval(ctx, interval);
+                      if (v == null) return;
+                      settings.autoScrollSeconds = v;
+                      await widget.library.saveSettings();
+                      setSheet(() {});
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      if (_autoScrollState == 'off')
+                        FilledButton(
+                          onPressed: () {
+                            _startAutoScroll();
+                            Navigator.of(ctx).pop();
+                          },
+                          child: const Text('Start'),
+                        ),
+                      if (_autoScrollState == 'running')
+                        FilledButton(
+                          onPressed: () {
+                            _pauseAutoScroll();
+                            setSheet(() {});
+                            if (mounted) setState(() {});
+                          },
+                          child: const Text('Pause'),
+                        ),
+                      if (_autoScrollState == 'paused')
+                        FilledButton(
+                          onPressed: () {
+                            _resumeAutoScroll();
+                            setSheet(() {});
+                            if (mounted) setState(() {});
+                          },
+                          child: const Text('Resume'),
+                        ),
+                      if (_autoScrollState != 'off')
+                        TextButton(
+                          onPressed: () {
+                            _stopAutoScroll();
+                            Navigator.of(ctx).pop();
+                          },
+                          child: const Text('Stop'),
+                        ),
+                    ],
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: Text(
+                      'Turns to the next page by itself at the chosen '
+                      'speed. You can still scroll or turn pages '
+                      'yourself — the timer restarts after each manual '
+                      'turn. It pauses when the app goes into the '
+                      'background, and never starts on its own.',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<int?> _pickCustomInterval(BuildContext context, int current) async {
+    final controller = TextEditingController(text: '$current');
+    final value = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Custom interval'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Seconds per page (1–300)',
+            suffixText: 's',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final v = int.tryParse(controller.text.trim());
+              if (v == null || v < 1 || v > 300) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('Enter 1 to 300 seconds.')),
+                );
+                return;
+              }
+              Navigator.of(ctx).pop(v);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    return value;
   }
 
   void _openFrameSettings() {
@@ -1446,13 +1998,35 @@ class _ReaderPageState extends State<ReaderPage>
       return const Center(child: Text('This PDF has no pages.'));
     }
     final frameMode = _isFrameMode;
-    return PageView.builder(
-      controller: _pageController,
-      // Manga reads right to left: the page turn runs the other way,
-      // while the page indices stay in reading order (0 is first).
-      reverse: _doc.rtl,
-      itemCount: _doc.pageCount,
-      onPageChanged: _onPageChanged,
+    final manga = _effectiveStyle() == 'manga';
+    // Manga single page: swiping past the last page opens the next
+    // document. Only the trailing edge (overscroll > 0, swiping down
+    // past the last page), and only for books with more than one
+    // page, so one continuous swipe cannot chain through several
+    // one-page documents.
+    return NotificationListener<OverscrollNotification>(
+      onNotification: (n) {
+        if (manga &&
+            _doc.mangaPaged &&
+            _isLastPage &&
+            _doc.pageCount > 1 &&
+            _nextDoc != null &&
+            n.overscroll > 0) {
+          _switchDocManga(_nextDoc!);
+        }
+        return false;
+      },
+      child: PageView.builder(
+        controller: _pageController,
+        // Manga mode pages turn top to bottom (one page at a time), so
+        // the PageView scrolls vertically and right-to-left does not
+        // apply. Horizontal manga reads right to left: the page turn
+        // runs the other way, while the page indices stay in reading
+        // order (0 is first).
+        scrollDirection: manga ? Axis.vertical : Axis.horizontal,
+        reverse: manga ? false : _doc.rtl,
+        itemCount: _doc.pageCount,
+        onPageChanged: _onPageChanged,
       itemBuilder: (ctx, index) {
         return FutureBuilder<Map<String, dynamic>>(
           future: _pageFutureFor(_doc, index),
@@ -1506,6 +2080,7 @@ class _ReaderPageState extends State<ReaderPage>
           },
         );
       },
+      ),
     );
   }
 
@@ -1578,17 +2153,39 @@ class _ReaderPageState extends State<ReaderPage>
   Widget _scrollView() {
     final entries = _scrollEntries();
     final vw = MediaQuery.of(context).size.width;
-    return ListView.builder(
-      controller: _scrollController,
-      itemCount: entries.length,
+    // A user drag cancels any programmatic scroll in flight (a
+    // volume-key page turn): the scroll target is dropped, so page
+    // tracking follows the user's finger again at once. A drag also
+    // marks the user as having navigated, which is what arms the
+    // manga auto-next guard.
+    return NotificationListener<ScrollStartNotification>(
+      onNotification: (n) {
+        if (n.dragDetails != null) {
+          _scrollTarget = null;
+          _userNavigated = true;
+        }
+        return false;
+      },
+      child: ListView.builder(
+        controller: _scrollController,
+        // Explicit Android-standard physics: no bounce, no
+        // overshoot stutter, and a drag always wins over a
+        // running programmatic scroll.
+        physics: const ClampingScrollPhysics(),
+        itemCount: entries.length,
       itemBuilder: (ctx, idx) {
         final e = entries[idx];
         return FutureBuilder<Map<String, dynamic>>(
           future: _pageFutureFor(e.doc, e.page),
           builder: (ctx, snap) {
             if (!snap.hasData) {
+              // Size the placeholder exactly like the real page
+              // (real aspect ratio once known, same estimate
+              // otherwise): a placeholder that is a different
+              // height from the page makes the list jump when the
+              // image loads.
               return SizedBox(
-                height: vw * 1.414 + 8,
+                height: _itemHeight(e, vw),
                 child: const Center(child: CircularProgressIndicator()),
               );
             }
@@ -1613,12 +2210,16 @@ class _ReaderPageState extends State<ReaderPage>
                     fit: BoxFit.fill,
                   ),
                 ),
-                const SizedBox(height: 8),
+                // The gap between pages. In Manga mode this is 0:
+                // the pages touch, so a spread reads as one image.
+                // Every other scroll mode keeps its 8px gap.
+                SizedBox(height: _pageGap),
               ],
             );
           },
         );
       },
+      ),
     );
   }
 
@@ -1827,6 +2428,13 @@ class _ReaderPageState extends State<ReaderPage>
                     _doc.rtl = !_doc.rtl;
                     await widget.library.saveDoc(_doc);
                     if (mounted) setState(() {});
+                  } else if (v == 'mangaPaged') {
+                    _doc.mangaPaged = !_doc.mangaPaged;
+                    await widget.library.saveDoc(_doc);
+                    if (mounted) setState(() {});
+                    _afterStyleChange();
+                  } else if (v == 'autoScroll') {
+                    _openAutoScrollSheet();
                   } else if (v == 'panels') {
                     _openFrameSettings();
                   } else if (v == 'overview') {
@@ -1918,6 +2526,48 @@ class _ReaderPageState extends State<ReaderPage>
                       ],
                     ),
                   ),
+                  // Manga mode only: flip between the strip (several
+                  // pages at once) and one page at a time, without
+                  // leaving the reader.
+                  if (style == 'manga')
+                    PopupMenuItem(
+                      value: 'mangaPaged',
+                      child: Row(
+                        children: [
+                          Icon(
+                            _doc.mangaPaged
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                              child: const Text('Manga: one page at a time')),
+                        ],
+                      ),
+                    ),
+                  // Manga mode only: automatic page turns at the
+                  // user's chosen speed.
+                  if (style == 'manga')
+                    PopupMenuItem(
+                      value: 'autoScroll',
+                      child: Row(
+                        children: [
+                          Icon(
+                            _autoScrollState == 'running'
+                                ? Icons.pause_circle_outline
+                                : Icons.play_circle_outline,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(_autoScrollState == 'off'
+                                ? 'Auto-scroll…'
+                                : 'Auto-scroll: ${_autoScrollState == 'running' ? 'scrolling' : 'paused'}'),
+                          ),
+                        ],
+                      ),
+                    ),
                   const PopupMenuItem(
                     value: 'panels',
                     child: Text('Panels & Frames…'),
@@ -1970,6 +2620,9 @@ class _ReaderPageState extends State<ReaderPage>
                         _isLastPage &&
                         _nextDoc != null &&
                         style != 'continuous' &&
+                        // Manga mode opens the next document by
+                        // itself — no prompt card.
+                        style != 'manga' &&
                         !_showText)
                       Positioned(
                         left: 16,
@@ -2007,6 +2660,9 @@ class _ReaderPageState extends State<ReaderPage>
                         _isFirstPage &&
                         _prevDoc != null &&
                         style != 'continuous' &&
+                        // Hidden while auto-scroll runs: the status
+                        // bar below occupies the same corner.
+                        _autoScrollState == 'off' &&
                         !_showText)
                       Positioned(
                         left: 16,
@@ -2029,6 +2685,63 @@ class _ReaderPageState extends State<ReaderPage>
                                 TextButton(
                                   onPressed: () => _switchDoc(_prevDoc!),
                                   child: const Text('Previous'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    // Auto-scroll status: the current interval and
+                    // state, with Pause / Resume and Stop at hand.
+                    // Tapping the speed icon opens the settings
+                    // sheet. Shown whenever auto-scroll is running
+                    // or paused, controls or not.
+                    if (_autoScrollState != 'off' && !_showText)
+                      Positioned(
+                        left: 12,
+                        right: 12,
+                        bottom: 12,
+                        child: Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(24),
+                          color: theme.colorScheme.surfaceContainerHigh,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
+                            child: Row(
+                              children: [
+                                IconButton(
+                                  tooltip: 'Auto-scroll settings',
+                                  icon: const Icon(Icons.speed, size: 20),
+                                  onPressed: _openAutoScrollSheet,
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'Auto-scroll • ${_autoScrollInterval}s / page • '
+                                    '${_autoScrollState == 'running' ? 'Scrolling' : 'Paused'}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: _autoScrollState == 'running'
+                                      ? 'Pause'
+                                      : 'Resume',
+                                  icon: Icon(
+                                    _autoScrollState == 'running'
+                                        ? Icons.pause
+                                        : Icons.play_arrow,
+                                    size: 20,
+                                  ),
+                                  onPressed: _autoScrollState == 'running'
+                                      ? _pauseAutoScroll
+                                      : _resumeAutoScroll,
+                                ),
+                                IconButton(
+                                  tooltip: 'Stop auto-scroll',
+                                  icon: const Icon(Icons.stop, size: 20),
+                                  onPressed: _stopAutoScroll,
                                 ),
                               ],
                             ),

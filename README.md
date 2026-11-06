@@ -1,26 +1,48 @@
 <p align="center">
-  <img src="assets/app_icon.png" width="128" alt="PDF Reader icon">
+  <img src="assets/app_icon.png" width="160" alt="Manga Reader icon">
 </p>
 
-<h1 align="center">PDF Reader</h1>
+<h1 align="center">📚 Manga Reader</h1>
 
 <p align="center">
-  A premium, minimal PDF &amp; comic reader for Android.<br>
-  No login. No ads. No cloud. No AI. Just your books, exactly where you left them.
+  <b>A premium, minimal PDF &amp; comic reader for Android.</b><br>
+  No login. No ads. No cloud. No AI. Just your books, exactly where you left them. ⚡
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.3.0-red" alt="version 2.3.0">
-  <img src="https://img.shields.io/badge/Android-8.0%2B-green" alt="Android 8.0+">
+  <a href="https://github.com/oxsh0gunX/Manga-Reader/releases"><img src="https://img.shields.io/badge/version-2.3.5-red" alt="version 2.3.5"></a>
+  <img src="https://img.shields.io/badge/Android-8.0%2B-brightgreen" alt="Android 8.0+">
   <img src="https://img.shields.io/badge/offline-100%25-blue" alt="100% offline">
   <img src="https://img.shields.io/badge/login-none-lightgrey" alt="no login">
+  <img src="https://img.shields.io/badge/ads-none-yellow" alt="no ads">
+  <img src="https://img.shields.io/badge/Manga_mode-on-purple" alt="Manga mode">
 </p>
+
+<p align="center">
+  <a href="#-get-it"><b>📥 Download</b></a> ·
+  <a href="#-what-it-does">✨ Features</a> ·
+  <a href="#-manga-mode">🖼️ Manga mode</a> ·
+  <a href="#-reading-styles">📐 Styles</a> ·
+  <a href="#-version-history">🕘 What's new</a>
+</p>
+
+---
+
+## ✨ At a glance
+
+| 📚 Library | 📖 Reading | 🖼️ Manga mode | 🎛️ Controls |
+| --- | --- | --- | --- |
+| Import PDFs, CBZ, CB7, CBT & images | Clean fullscreen pages, tap to show controls | Strip & single page, top to bottom | Volume keys turn pages |
+| Drag-and-drop reading order | Pinch zoom, long-press zoom, brightness | Auto-scroll at your speed | Volume Up+Down = screenshot |
+| Search, recent books, progress | Text view with copy & share | Auto-opens the next book | Panels & frames, one at a time |
+
+> 🎉 **New in v2.3.5 — Manga mode, improved:** strip pages now touch with **no gaps**, so a spread reads as one image; smoother scrolling; **Auto-scroll** (1–10 s per page or custom, Start / Pause / Resume / Stop); and **Auto-next document** — finish a book and the next one opens by itself, in Manga mode, from its first page. See [🕘 Version history](#-version-history).
 
 ---
 
 ## 📥 Get it
 
-Download the latest APK from **[Releases](https://github.com/oxsh0gunX/PDF-Reader/releases)** and install it on your phone.
+Download the latest APK from **[Releases](https://github.com/oxsh0gunX/Manga-Reader/releases)** and install it on your phone.
 
 > ⚠️ **Install over the previous version — do not uninstall first**, or your library and reading progress will be lost. Updates keep everything: your PDFs, your reading order, and your place in every book.
 
@@ -59,7 +81,7 @@ Download the latest APK from **[Releases](https://github.com/oxsh0gunX/PDF-Reade
 Single presses only, both directions fully configurable in Settings, and the keys return to normal system volume outside the reader.
 
 ### 🎨 Make it yours
-- Reading styles saved per document: horizontal, vertical, panel, frame, continuous, or auto (adapts to the page shape)
+- Reading styles saved per document: horizontal, vertical, panel, frame, continuous, manga, or auto (adapts to the page shape)
 - Frame layout, panels per page, overlap padding, and frame zoom
 - Text size, colour, font, letter spacing, and line height for the text view (never restyles the PDF page image)
 - Day, Dark, and System themes, plus an opt-in dark page filter
@@ -73,7 +95,19 @@ Single presses only, both directions fully configurable in Settings, and the key
 | Panel | Comics and manga, one panel at a time |
 | Frame | Tall pages, read in stacked bands |
 | Continuous | Flowing through your whole library in order |
+| **Manga** | **Manga: top to bottom, spreads together, auto-scroll & auto-next** |
 | Auto | Lets the page shape decide |
+
+## 🖼️ Manga mode
+
+A manga spread is one image running across two pages, so one page at a time left-to-right splits it. Manga mode flows **top to bottom** instead:
+
+- **Strip** (default) — pages scroll down with several visible at once, so both pages of a spread show together. Pages touch with no gap, so a spread reads as one image.
+- **Single page** — one page at a time, swiped up and down (top tap = back, bottom tap = forward, middle tap = controls).
+- **Auto-scroll** — the reader turns pages by itself at your speed: 1 / 2 / 3 / 5 / 10 seconds per page, or a custom interval (1–300 s, saved). Start / Pause / Resume / Stop, with a status bar showing the interval and state. A manual turn restarts the interval; it pauses when the app goes to the background and never restarts itself.
+- **Auto-next document** — reach the end of a book and the next one in your library opens by itself, in Manga mode, from its first page. No popup. The last book simply stops.
+
+Pick it in the Reading style sheet (top of the list), or flip between strip and single page from the reader's menu. Saved per document.
 
 ## 🛠️ How it works
 
@@ -99,8 +133,9 @@ lib/
 android/.../MainActivity.java  # SAF picking, PdfRenderer, volume keys,
                                # brightness, MediaStore screenshots, sharing
 manual/                # manifest + resources for the manual packaging route
-test/                  # JSON, reliability, volume-navigation, v2.2.3, and
-                       # comic (detection, extraction, sorting, errors) tests
+test/                  # JSON, reliability, volume-navigation, v2.2.3, comic
+                       # (detection, extraction, sorting, errors), RTL,
+                       # manga mode, and v2.3.5 auto-scroll / auto-next tests
 MANUAL_TESTS.md        # manual procedures for what automated tests can't cover
 ```
 
@@ -113,7 +148,7 @@ flutter pub get
 flutter build apk --release
 ```
 
-Manual route used for the delivered APKs (bypasses Gradle): see `build-pdfreader-v230.sh` next to this folder. It runs `flutter assemble` for arm64 + arm, compiles the Java host, links with `aapt2`, dexes with `d8`, then `zipalign` + `apksigner`. Its locations are overridable with environment variables instead of being hard-coded to one machine:
+Manual route used for the delivered APKs (bypasses Gradle): see `build-pdfreader-v235.sh` next to this folder. It runs `flutter assemble` for arm64 + arm, compiles the Java host, links with `aapt2`, dexes with `d8`, then `zipalign` + `apksigner`. Its locations are overridable with environment variables instead of being hard-coded to one machine:
 
 - `WORKSPACE` (default `~/workspace`) — project, Flutter install, toolchain jars and signing key all live under it
 - `JAVA_HOME` (default `~/jdk17`, used only if it contains `javac`), `FLUTTER_BIN` (default `$WORKSPACE/flutter/bin`), `ANDROID_SDK` (default `~/Android/Sdk`), `KEYSTORE` (default `$WORKSPACE/debug.keystore`)
@@ -132,17 +167,23 @@ The manual route still needs this machine's toolchain jars (`flutter-proof/`, `m
 | v2.2.2 | Volume keys switch documents at the ends of a book |
 | v2.2.3 | Duplicate-import guard (content hash), left/right tap navigation, vertical mode verified + tested |
 | v2.3.0 | Comic & manga formats: CBZ/ZIP, CB7/7Z, CBT/TAR (+ compressed tar), single images; natural page order; right-to-left manga reading; duplicate guard and full reader feature set for comics. CBR/RAR is detected and refused, not claimed. |
+| v2.3.1 | Multiple file selection: pick several PDFs, comics and images in one picker session — each imports in turn, with a progress dialog and a summary (added / already in library / failed, with the reason). One bad file never stops the rest. Also renamed to **Manga Reader** (launcher name, home title, About). Package name and signing unchanged; screenshots still save to Pictures / PDF Reader. |
+| v2.3.2 | New launcher + About icon: the manga-reader face the user picked (Icon 2). Multi-select picker fix: the picker no longer goes through a chooser — on MIUI the chooser handed the pick to Mi File Explorer, whose multi-select does not stick (only one file came back). The app now opens the system Documents picker directly, which returns all selected files. |
+| v2.3.3 | **In-app file browser — the real multi-select fix.** On the user's phone the system picker never returned the selection at all: the Documents picker is not reachable on MIUI, and Mi File Explorer opens in browse mode (tapping a file asks "Open with"; long-press select has no usable confirm) and returns nothing. So the app now lists the shared storage itself: tap **Import files** → allow "All files access" once → browse folders, tick several files with clear checkboxes, **Import N selected**. Same import path as before (duplicates, corrupt files, unsupported formats handled per file). System picker kept as a fallback in the browser menu. |
+| v2.3.4 | **Manga mode.** A manga spread is one image running across two pages, so one page at a time left-to-right splits it. Manga mode flows top to bottom instead: **Strip** (default) scrolls the pages down with several visible at once, so both pages of a spread show together; **Single page** shows one page at a time, swiped up and down (top tap = back, bottom tap = forward, middle tap = controls). Pick it in the Reading style sheet (top of the list) or flip between strip and single page from the reader's menu. Saved per document. Also fixed while testing it: a volume-key page turn in any scroll mode could briefly push the saved page backwards mid-animation (`_scrollTarget` guard). |
+| v2.3.5 | **Manga mode improvements.** Strip pages now touch with no gap, so a spread reads as one image (other scroll modes keep their 8px gap); smoother scrolling — placeholders are sized like the real page and comic pages ahead are pre-sized, so the list never jumps as images load, and manga turns glide a little slower and softer. **Auto-scroll** (reader menu, Manga mode only): 1 / 2 / 3 / 5 / 10 seconds per page or a custom interval (1–300 s, saved), with Start / Pause / Resume / Stop and a status bar showing the interval and state; a manual turn restarts the interval, it pauses when the app goes to the background and never restarts itself, and exactly one timer runs at a time. **Auto-next document:** reaching the end of a book in Manga mode opens the next document in library order, in Manga mode, from its first page — no popup; the last document simply stops. Also fixed while testing it: a stale page-change report from a previous document's PageView could be saved as the new document's progress after a switch (`_onPageChanged` now only accepts a page the reader or the controller is actually on), and `_stopAutoScroll` no longer calls `setState` while the reader is being torn down. |
 
-Version consistency: `2.3.0+8` in `pubspec.yaml`, `2.3.0` on the About page and in the Settings subtitle, and `v2.3.0` here. Package `com.example.pdfreader`, minSdk 26, targetSdk 34, signing configuration unchanged.
+Version consistency: `2.3.5+13` in `pubspec.yaml`, `2.3.5` on the About page and in the Settings subtitle, and `v2.3.5` here. Package `com.example.pdfreader`, minSdk 26, targetSdk 34, signing configuration unchanged.
 
 ## ✅ Tests
 
 ```sh
 flutter analyze   # clean
-flutter test      # 83 tests: JSON round-trips, reliability bounds, panel
+flutter test      # 124 tests: JSON round-trips, reliability bounds, panel
                   # persistence, volume navigation, v2.2.3 tap/duplicate
                   # tests, plus comic detection, natural sort, ZIP/TAR
-                  # extraction, import flow, errors, and RTL reader tests
+                  # extraction, import flow, errors, RTL reader tests,
+                  # manga mode, and v2.3.5 auto-scroll / auto-next tests
 ```
 
 Known limits worth knowing before you test on the phone:
@@ -158,6 +199,6 @@ Native behaviour (volume dispatch, brightness, MediaStore, real rendering) can't
 ---
 
 <p align="center">
-  <b>PDF Reader</b> · by Safvan · <a href="mailto:safvanmbn@gmail.com">safvanmbn@gmail.com</a> · <a href="https://github.com/oxsh0gunX">GitHub</a><br>
+  <b>📚 Manga Reader</b> · by Safvan · <a href="mailto:safvanmbn@gmail.com">safvanmbn@gmail.com</a> · <a href="https://github.com/oxsh0gunX">GitHub</a><br>
   © 2026 Safvan. All rights reserved.
 </p>

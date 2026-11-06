@@ -1,6 +1,7 @@
 package com.example.pdfreader;
 
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
@@ -114,14 +115,42 @@ public class MainActivity extends FlutterActivity {
                         case "getCacheDir":
                             result.success(getCacheDir().getAbsolutePath());
                             break;
-                        case "pickFile": {
+                        case "isAllFilesAccess":
+                            // "All files access" (MANAGE_EXTERNAL_STORAGE,
+                            // Android 11+). The in-app browser needs it
+                            // to list the shared storage itself, because
+                            // the system picker on this phone will not
+                            // return multi-select picks.
+                            result.success(
+                                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                                            && Environment.isExternalStorageManager());
+                            break;
+                        case "openAllFilesAccessSettings":
+                            // Opens the system screen where the user
+                            // turns on "Allow access to all files" for
+                            // this app. Nothing is granted here — the
+                            // user flips the switch themself.
+                            Intent settingsIntent = new Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                            settingsIntent.setData(
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivity(settingsIntent);
+                            result.success(null);
+                            break;
+                        case "pickFiles": {
                             pendingPick = result;
                             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                            // One file per pick: a PDF, a comic archive or a
-                            // single image. The MIME list is a hint for the
-                            // picker UI only — Dart validates the file by
-                            // extension + magic bytes after it is copied.
+                            // Several files per pick: PDFs, comic archives
+                            // or single images, in one picker session.
+                            // EXTRA_ALLOW_MULTIPLE is what makes the
+                            // picker offer multi-select (long-press /
+                            // tap several files); without it Android
+                            // only ever returns one file. The MIME list
+                            // is a hint for the picker UI only — Dart
+                            // validates each file by extension + magic
+                            // bytes after it is copied.
                             intent.setType("*/*");
+                            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                             intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
                                     "application/pdf",
                                     "application/zip",
@@ -139,8 +168,24 @@ public class MainActivity extends FlutterActivity {
                             });
                             intent.addCategory(Intent.CATEGORY_OPENABLE);
                             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                            startActivityForResult(
-                                    Intent.createChooser(intent, "Choose a file"), PICK_FILE);
+                            // Open the SYSTEM Documents picker directly,
+                            // not through a chooser: on MIUI the chooser
+                            // hands the pick to Mi File Explorer, whose
+                            // multi-select does not stick — tapping a
+                            // second file drops the first, so only one
+                            // file ever comes back. DocumentsUI does
+                            // real multi-select (long-press the first
+                            // file, tap the rest, then the tick) and
+                            // returns them all in ClipData. If
+                            // DocumentsUI is missing on some device,
+                            // fall back to the plain intent.
+                            try {
+                                intent.setPackage("com.android.documentsui");
+                                startActivityForResult(intent, PICK_FILE);
+                            } catch (Exception e) {
+                                intent.setPackage(null);
+                                startActivityForResult(intent, PICK_FILE);
+                            }
                             break;
                         }
                         case "extractSevenZ": {
@@ -833,66 +878,95 @@ public class MainActivity extends FlutterActivity {
         if (requestCode == PICK_FILE && pendingPick != null) {
             MethodChannel.Result r = pendingPick;
             pendingPick = null;
-            if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
-                r.success(null);
-                return;
-            }
-            try {
-                Uri uri = data.getData();
-                File dir = new File(getFilesDir(), "pdfs");
-                if (!dir.exists()) dir.mkdirs();
-                String displayName = "document";
-                long size = 0;
-                Cursor c = null;
-                try {
-                    c = getContentResolver().query(uri, null, null, null, null);
-                    if (c != null && c.moveToFirst()) {
-                        int ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                        if (ni >= 0) displayName = c.getString(ni);
-                        int si = c.getColumnIndex(OpenableColumns.SIZE);
-                        if (si >= 0 && !c.isNull(si)) size = c.getLong(si);
+            // The whole picked set, in picker order. A cancelled pick
+            // is an empty list (Dart treats it as "nothing chosen").
+            // One Uri failing to copy must not lose the rest: each
+            // result is either {name, path, size} or {name, error},
+            // and Dart reports the failures in its import summary.
+            List<Map<String, Object>> results = new ArrayList<>();
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                List<Uri> uris = new ArrayList<>();
+                ClipData clip = data.getClipData();
+                if (clip != null) {
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        Uri u = clip.getItemAt(i).getUri();
+                        if (u != null) uris.add(u);
                     }
-                } finally {
-                    if (c != null) c.close();
+                } else if (data.getData() != null) {
+                    // One file chosen: the picker returns it as the
+                    // intent's data Uri, with no ClipData.
+                    uris.add(data.getData());
                 }
-                if (displayName == null || displayName.isEmpty()) displayName = "document";
-                String safe = displayName.replaceAll("[^A-Za-z0-9._ -]", "_");
-                File dest = uniqueFile(dir, safe);
-                InputStream in = null;
-                FileOutputStream os = null;
-                long total = 0;
-                try {
-                    in = getContentResolver().openInputStream(uri);
-                    if (in == null) throw new Exception("Could not open file");
-                    os = new FileOutputStream(dest);
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) != -1) {
-                        os.write(buf, 0, n);
-                        total += n;
-                    }
-                } catch (Exception e) {
-                    // Dart never sees the path on this branch, so it
-                    // cannot clean up: delete the partial copy here.
-                    if (dest.exists()) dest.delete();
-                    throw e;
-                } finally {
-                    if (os != null) {
-                        try { os.close(); } catch (Exception ignored) {}
-                    }
-                    if (in != null) {
-                        try { in.close(); } catch (Exception ignored) {}
-                    }
+                for (Uri uri : uris) {
+                    results.add(copyPickedUri(uri));
                 }
-                Map<String, Object> m = new HashMap<>();
-                m.put("name", displayName);
-                m.put("path", dest.getAbsolutePath());
-                m.put("size", size > 0 ? size : total);
-                r.success(m);
-            } catch (Exception e) {
-                r.error("PICK_FAILED", e.getMessage(), null);
             }
+            r.success(results);
         }
+    }
+
+    /// Copies one picked document into filesDir/pdfs (unique name, so
+    /// two picked files with the same name never clobber each other)
+    /// and returns {name, path, size}. On failure returns
+    /// {name, error} instead — the caller keeps the other files.
+    private Map<String, Object> copyPickedUri(Uri uri) {
+        String displayName = "document";
+        long size = 0;
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (ni >= 0) displayName = c.getString(ni);
+                int si = c.getColumnIndex(OpenableColumns.SIZE);
+                if (si >= 0 && !c.isNull(si)) size = c.getLong(si);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        if (displayName == null || displayName.isEmpty()) displayName = "document";
+        Map<String, Object> m = new HashMap<>();
+        m.put("name", displayName);
+        try {
+            File dir = new File(getFilesDir(), "pdfs");
+            if (!dir.exists()) dir.mkdirs();
+            String safe = displayName.replaceAll("[^A-Za-z0-9._ -]", "_");
+            File dest = uniqueFile(dir, safe);
+            InputStream in = null;
+            FileOutputStream os = null;
+            long total = 0;
+            try {
+                in = getContentResolver().openInputStream(uri);
+                if (in == null) throw new Exception("Could not open file");
+                os = new FileOutputStream(dest);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    os.write(buf, 0, n);
+                    total += n;
+                }
+            } catch (Exception e) {
+                // Dart never sees the path on this branch, so it
+                // cannot clean up: delete the partial copy here.
+                if (dest.exists()) dest.delete();
+                throw e;
+            } finally {
+                if (os != null) {
+                    try { os.close(); } catch (Exception ignored) {}
+                }
+                if (in != null) {
+                    try { in.close(); } catch (Exception ignored) {}
+                }
+            }
+            m.put("path", dest.getAbsolutePath());
+            m.put("size", size > 0 ? size : total);
+        } catch (Exception e) {
+            m.put("error", e.getMessage() != null
+                    ? e.getMessage()
+                    : "Could not copy this file.");
+        }
+        return m;
     }
 
     private File uniqueFile(File dir, String name) {

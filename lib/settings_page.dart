@@ -320,8 +320,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _section('About', [
             ListTile(
               leading: const Icon(Icons.info_outlined),
-              title: const Text('About PDF Reader'),
-              subtitle: const Text('Version 2.3.0 • Safvan'),
+              title: const Text('About Manga Reader'),
+              subtitle: const Text('Version 2.3.5 • Safvan'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () {
                 Navigator.of(context).push(
@@ -332,7 +332,7 @@ class _SettingsPageState extends State<SettingsPage> {
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
               child: Text(
-                'PDF Reader, fully offline, no login, no AI chat, '
+                'Manga Reader, fully offline, no login, no AI chat, '
                 'no OCR, no cloud sync, no subscriptions. Your PDFs, '
                 'reading order and progress stay on your phone.',
                 style: TextStyle(fontSize: 13),

@@ -12,7 +12,7 @@ class AboutPage extends StatelessWidget {
   static const String developer = 'Safvan';
   static const String email = 'safvanmbn@gmail.com';
   static const String github = 'https://github.com/oxsh0gunX';
-  static const String version = '2.3.0';
+  static const String version = '2.3.5';
 
   Future<void> _contact(BuildContext context) async {
     try {
@@ -81,7 +81,7 @@ class AboutPage extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             const Text(
-              'PDF Reader',
+              'Manga Reader',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),

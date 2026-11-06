@@ -61,7 +61,7 @@ class _PdfReaderAppState extends State<PdfReaderApp> {
     return AnimatedBuilder(
       animation: _library,
       builder: (ctx, _) => MaterialApp(
-        title: 'PDF Reader',
+        title: 'Manga Reader',
         debugShowCheckedModeBanner: false,
         theme: _theme(Brightness.light),
         darkTheme: _theme(Brightness.dark),

@@ -165,3 +165,146 @@ Tick each one off; anything that fails is a bug, not a "known issue".
       a very short book (2–3 tall pages) may not register its last
       page as read when you scroll to the very bottom; page-by-page
       mode records it fine.
+
+## 11. Multiple file selection (v2.3.1)
+
+- [ ] Tap **Import files**. The SYSTEM Documents picker opens (NOT
+      Mi File Explorer — if you see Mi Explorer's screen with the
+      OK/Cancel buttons at the bottom, the fix did not take). Long-press
+      the first file, then tap 4 more (a mix: 2 PDFs, 1 CBZ, 1 CB7,
+      1 image), then the tick to confirm. The picker must let you
+      select all 5 at once — if it only lets you pick one, the fix
+      did not take.
+- [ ] While they import, a dialog shows "Importing 2 of 5…" and counts
+      up. When it finishes, the SnackBar says "Added 5 files to your
+      library" and all 5 appear in the library, in the order picked.
+- [ ] Pick 5 again with one corrupt file among them (e.g. a CBZ that
+      is only half a file): the other 4 import, and the summary lists
+      the broken one by name with its reason.
+- [ ] Pick 5 with one file that is already in the library: it is
+      reported as "Already in your library", the other 4 import.
+- [ ] Pick just one file: it imports exactly as before, with the
+      "Added to your library" message.
+- [ ] Open the picker and press back without choosing: nothing
+      happens, no message, no empty entry.
+
+## 12. In-app file browser (v2.3.3)
+
+v2.3.2's Documents-picker fix did not work on this phone: the video
+the user sent shows Mi File Explorer opening in browse mode (tapping a
+file asks "Open with"; long-press select has no usable confirm button)
+and nothing comes back into the app. The in-app browser replaces the
+system picker as the main import flow, so multi-select no longer
+depends on MIUI's picker at all.
+
+- [ ] Tap **Import files**: the first time, a screen explains why the
+      app needs to see your files, with an **Allow access to all
+      files** button. Tap it, turn the switch ON in the settings
+      screen that opens, then come back — the file list appears
+      without tapping anything else.
+- [ ] The list starts at the phone's storage: folders first (tap one
+      to go inside), then PDFs, comics and images in natural order.
+      Open **Sbi wallet** and tick Ch-35, Ch-36, Ch-37 with the
+      checkboxes on the right (tapping the whole row also toggles).
+- [ ] **Select all** ticks every file in the folder; tapping it again
+      unticks them.
+- [ ] The bottom button reads **Import 3 selected** (or however many
+      are ticked). Tap it: the progress dialog counts up, then the
+      home list shows all 3 books. The originals are still in
+      Sbi wallet — the app keeps its own copies.
+- [ ] Tick 5 files including one that is already in the library and
+      one broken file: the summary lists the duplicate and the broken
+      one by name, the other 3 import.
+- [ ] The three-dot menu in the browser has **Use system picker** —
+      the old flow, kept as a fallback.
+- [ ] Deny the permission (back out of the settings screen without
+      turning it on): the browser stays on the explanation screen,
+      no crash, and the button can be tried again.
+
+## 13. Manga mode (v2.3.4)
+
+A manga spread is one image running across two pages, so one page at
+a time left-to-right splits it. Manga mode flows top to bottom.
+
+- [ ] Open a manga (CBZ/CB7): tap the screen to show the controls,
+      tap the **Reading style** button, pick **Manga mode** (top of
+      the list). The pages now flow down: scroll and you see the end
+      of one page and the start of the next at the same time.
+- [ ] Find a two-page spread (one image across two pages): both
+      pages show together on screen, one above the other, so the
+      whole image is visible without turning a page.
+- [ ] In the same style sheet, under Manga mode, pick **Single
+      page**: now one page fills the screen; swipe up for the next
+      page, down for the previous. Tap the bottom of the screen for
+      the next page, the top for the previous, the middle for the
+      controls.
+- [ ] From the reader's three-dot menu, **Manga: one page at a
+      time** flips between the strip and single page without leaving
+      the reader.
+- [ ] Volume Up / Down turn pages in both views. In the strip, the
+      saved page must not jump back mid-turn (fixed in this version).
+- [ ] Close the book and reopen it: Manga mode is remembered, and
+      the book opens on the page you left.
+- [ ] A PDF opened in Manga mode works the same way (strip and
+      single page); the text view is still available for PDFs.
+
+## 14. Manga mode improvements (v2.3.5)
+
+### 14a. No gaps in the strip
+
+- [ ] Open a manga in Manga mode (strip): the pages touch — the
+      bottom of one page meets the top of the next with no black band
+      between them, even where two pages have different sizes.
+- [ ] A two-page spread reads as one continuous image.
+- [ ] Open the same book in Vertical scrolling: the 8px gap between
+      pages is still there (normal reading is unchanged).
+
+### 14b. Smooth scrolling
+
+- [ ] Scroll a long manga fast, up and down: no jumps, no flicker,
+      no page suddenly changing size as its image loads.
+- [ ] Volume Up / Down in the strip: the turn glides smoothly, and
+      the saved page never jumps back mid-turn.
+- [ ] While a volume-key turn is animating, grab the list and drag
+      it: the drag wins at once, no fight, no crash, and the next
+      volume press still turns exactly one page.
+
+### 14c. Auto-scroll
+
+- [ ] In Manga mode, open the three-dot menu → **Auto-scroll…**.
+      The sheet shows the current speed and **Start**.
+- [ ] Pick **1 second per page**, tap Start: the pages turn by
+      themselves every second. The status bar at the bottom shows
+      `Auto-scroll • 1s / page • Scrolling` with Pause and Stop.
+- [ ] Try **2**, **3**, **5** and **10 seconds per page**: each turns
+      at that speed. Pick **Custom…**, enter 7, Save: the sheet shows
+      `Custom: 7 seconds per page`, and it is remembered the next
+      time you open the sheet.
+- [ ] While it is scrolling, tap **Pause**: the pages stop. Wait
+      several seconds: nothing moves. Tap **Resume**: it starts again.
+      Tap **Stop**: it stops and the status bar goes away.
+- [ ] While it is scrolling, turn a page yourself (volume key or
+      tap): the next automatic turn waits a full interval from your
+      turn, it does not fire straight after it.
+- [ ] Start auto-scroll, then press the Home button to send the app
+      to the background, then come back: it is Paused, not scrolling.
+      Tap Resume to start it again. It never starts by itself.
+- [ ] Leave the reader (back to the library) while auto-scroll is
+      running, then reopen the book: auto-scroll is off.
+
+### 14d. Auto-next document
+
+- [ ] Have two manga in the library. Open the first in Manga mode
+      (strip): scroll to the very bottom of the last page and wait a
+      moment — the second manga opens by itself, in Manga mode, from
+      its first page. No popup, no button to tap.
+- [ ] In Single page: on the last page, tap the bottom of the screen
+      (or press Volume Up, or swipe down past the last page) — the
+      next document opens the same way.
+- [ ] With auto-scroll running, let it reach the end of the first
+      book: it carries on into the next book and keeps scrolling.
+- [ ] On the last book in the library, reach the end: nothing opens,
+      no loop, no restart of the same book. Auto-scroll stops with
+      `End of library — auto-scroll stopped`.
+- [ ] Do the same in Vertical scrolling (not Manga mode): reaching
+      the bottom does NOT open the next document.

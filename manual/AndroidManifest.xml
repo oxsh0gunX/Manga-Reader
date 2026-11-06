@@ -1,10 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.pdfreader">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
-    <!-- No storage permission is needed: files are picked with Android's
-         Storage Access Framework and screenshots are saved via MediaStore. -->
+    <!-- The in-app file browser needs "All files access" so the user can
+         tick several files at once: on this phone the system picker
+         (Mi File Explorer) does not return multi-select picks, so the
+         app lists the shared storage itself. The permission is only
+         used to read the files the user chooses to import; nothing is
+         uploaded anywhere. Screenshots are still saved via MediaStore. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <application
-        android:label="PDF Reader"
+        android:label="Manga Reader"
         android:icon="@mipmap/ic_launcher"
         android:extractNativeLibs="true">
         <activity
