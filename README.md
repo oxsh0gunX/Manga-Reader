@@ -1,3 +1,8 @@
+
+## Questions?
+
+Ask in [Discussions](https://github.com/oxsh0gunX/Manga-Reader/discussions) — the Q&A category is for import, reading styles, Manga mode and anything else. Answers that solve a question get marked as the accepted answer.
+
 <p align="center">
   <img src="assets/app_icon.png" width="160" alt="Manga Reader icon">
 </p>
